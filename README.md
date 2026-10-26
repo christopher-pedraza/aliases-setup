@@ -30,7 +30,7 @@ After the first `add`, the same commands work from any shell as `aliases-setup <
 | `utils` | `extract`, `backup`, `paths`, `o` (open), `clip` (clipboard) |
 | `node` / `python` | npm and pip/venv shortcuts |
 | `tmux` | `tn`, `ta`, `tk`, `tl`, `tka` |
-| `ibex` | KAUST Ibex / Slurm queue, session and quota shortcuts |
+| `ibex` | KAUST Ibex: `ibex-cpu`, `ibex-gpu`, `ibex-mover` ssh logins (set `export IBEX_USER=<your-kaust-id>` first), plus Slurm queue, session and quota shortcuts |
 
 ## How it works
 

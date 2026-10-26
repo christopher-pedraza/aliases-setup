@@ -1,0 +1,67 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+    # The macOS leg has not been run yet. It is informational (it won't block a
+    # release) until you've seen it green; then delete this line.
+    continue-on-error: ${{ matrix.os == 'macos-latest' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install zsh (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y zsh
+
+      - name: Check every package (syntax, portability, conflicts, loading)
+        run: ./setup.sh check --load
+
+      - name: Smoke test (install, load in bash and zsh, uninstall)
+        run: sh tests/smoke.sh
+        env:
+          # macOS ships bash 3.2 as /bin/bash; test with it, not the brew one.
+          BASH_BIN: ${{ runner.os == 'macOS' && '/bin/bash' || 'bash' }}
+
+  release:
+    name: release
+    needs: test
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    concurrency:
+      group: release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+
+      # To cut a release: bump the number in VERSION and merge to main.
+      - name: Create a release when VERSION has a new number
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          version=$(tr -d ' \r\n' < VERSION)
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "VERSION must look like 1.2.3, got '$version'" >&2
+            exit 1
+          fi
+          tag="v$version"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "$tag is already released; nothing to do."
+            exit 0
+          fi
+          gh release create "$tag" --target "$GITHUB_SHA" --title "$tag" --generate-notes

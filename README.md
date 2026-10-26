@@ -69,6 +69,10 @@ Releases are git tags (`vX.Y.Z`) that CI creates; `upgrade` fast-forwards your c
 
 **What happens to packages you already enabled?** They're symlinks into the repo, so an updated package is live in your next shell with nothing to reinstall, and new commands in it (say, new `ibex` aliases) just appear. `upgrade` then tells you which packages were updated, which are new (new packages are never enabled for you), and which were removed upstream while still enabled (`remove` clears those). It also refreshes the copied loader (`~/.config/aliases-setup/init.sh`) and warns about any new name conflicts. Packages you downloaded from a URL are separate: update those with `./setup.sh update`. A plain `git pull` works too; `./setup.sh status` then tells you if the loader needs a refresh (`./setup.sh install`).
 
+## Releases and CI
+
+`.github/workflows/ci.yml` runs on every push and pull request on Linux and macOS: `./setup.sh check --load` plus `tests/smoke.sh` (install, load in bash and zsh, uninstall, confirm your rc files are restored). On `main`, if the number in `VERSION` has no release yet, it creates one with generated notes. **To release: change `VERSION` (e.g. `0.2.0`), merge to `main`.** The macOS job is currently informational (`continue-on-error`) until it has run green once.
+
 ## Conflicts
 
 Packages load in name order and a later definition silently replaces an earlier one, so two packages defining the same alias or function is a trap. Three places catch it:

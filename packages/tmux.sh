@@ -1,4 +1,5 @@
-# --- Functions ---
+# DESCRIPTION: Tmux session shortcuts
+# REQUIRES: tmux
 
 tn() {
     # DESC: New tmux session. Usage: tn <name>
@@ -15,6 +16,5 @@ tk() {
     if [ -z "$1" ]; then echo "Provide name"; else tmux kill-session -t "$1"; fi
 }
 
-# --- Aliases ---
 alias tl='tmux ls' # DESC: List all active tmux sessions
 alias tka='tmux kill-server' # DESC: Kill ALL tmux sessions

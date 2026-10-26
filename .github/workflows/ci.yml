@@ -17,9 +17,6 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
-    # The macOS leg has not been run yet. It is informational (it won't block a
-    # release) until you've seen it green; then delete this line.
-    continue-on-error: ${{ matrix.os == 'macos-latest' }}
     steps:
       - uses: actions/checkout@v4
 

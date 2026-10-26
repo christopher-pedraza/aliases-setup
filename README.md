@@ -72,7 +72,7 @@ Releases are git tags (`vX.Y.Z`) that CI creates; `upgrade` fast-forwards your c
 
 ## Releases and CI
 
-`.github/workflows/ci.yml` runs on every push and pull request on Linux and macOS: `./setup.sh check --load` plus `tests/smoke.sh` (install, load in bash and zsh, uninstall, confirm your rc files are restored). On `main`, if the number in `VERSION` has no release yet, it creates one with generated notes. **To release: change `VERSION` (e.g. `0.2.0`), merge to `main`.** The macOS job is currently informational (`continue-on-error`) until it has run green once.
+`.github/workflows/ci.yml` runs on every push and pull request on Linux and macOS: `./setup.sh check --load` plus `tests/smoke.sh` (install, load in bash and zsh, uninstall, confirm your rc files are restored). On `main`, if the number in `VERSION` has no release yet, it creates one with generated notes. **To release: change `VERSION` (e.g. `0.2.0`), merge to `main`.** Both legs must pass before a release is created. If the macOS leg ever fails because the runner image changed rather than your code, re-run it or pin the runner (e.g. `macos-14`).
 
 ## Conflicts
 

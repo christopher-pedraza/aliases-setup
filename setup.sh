@@ -30,7 +30,8 @@ END='# <<< aliases-setup <<<'
 YES=0 ALL=0 PURGE=0 LOAD=0 NAME_OPT= SHELL_OPT=
 CHK_N=0 CHK_FAIL=0 CHK_ERR=0 CHK_WARN=0 ISSUES=
 WORK=
-trap '[ -z "$WORK" ] || rm -rf "$WORK"' EXIT
+TTY_SAVED=
+trap 'restore_tty; [ -z "$WORK" ] || rm -rf "$WORK"' EXIT
 
 if [ -t 1 ]; then
     ESC=$(printf '\033')
@@ -407,6 +408,197 @@ add_url() { # <url>
 
 reload_hint() { info "${C_DIM}Open a new shell, or run: reloadalias (core package) / exec \$SHELL${C_OFF}"; }
 
+# ---------------------------------------------------------------- interactive selection
+# A checkbox list in pure POSIX sh: raw mode via stty, keys via dd, drawing via ANSI escapes.
+
+apply_changes() { # <packages to enable> <packages to disable>, space-separated
+    _adds=$1 _rems=$2
+    if [ -z "$_adds" ] && [ -z "$_rems" ]; then info "No changes."; return 0; fi
+    for _p in $_adds; do pkg_check "$_p"; done
+    if [ -n "$_adds" ]; then
+        _sh=$(target_shell)
+        bootstrap "$_sh"
+        for _p in $_adds; do enable_pkg "$_p"; done
+    fi
+    for _p in $_rems; do
+        rm -f "$ENABLED/$_p.sh"
+        ok "Disabled $_p"
+    done
+    if [ -n "$_adds" ]; then reload_hint; fi
+    if [ -n "$_rems" ]; then info "${C_DIM}Open shells keep removed aliases until restarted.${C_OFF}"; fi
+}
+
+can_pick() { # a real terminal that understands ANSI escapes
+    if ! { [ -t 0 ] && [ -t 1 ]; }; then return 1; fi
+    case ${TERM:-dumb} in dumb|unknown) return 1 ;; esac
+    stty -g >/dev/null 2>&1
+}
+
+restore_tty() {
+    if [ -n "$TTY_SAVED" ]; then
+        stty "$TTY_SAVED" 2>/dev/null || stty sane
+        printf '\033[?25h'
+        TTY_SAVED=
+    fi
+}
+
+read_key() { # prints UP DOWN SPACE ENTER ALL QUIT or OTHER
+    _h=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
+    case $_h in
+        1b) # an arrow key is ESC [ A / ESC O A; a lone ESC means "cancel"
+            stty min 0 time 1
+            _h2=$(dd bs=1 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')
+            stty min 1 time 0
+            case $_h2 in
+                5b41|4f41) echo UP ;;
+                5b42|4f42) echo DOWN ;;
+                '')        echo QUIT ;;
+                *)         echo OTHER ;;
+            esac ;;
+        20)       echo SPACE ;;
+        0a|0d)    echo ENTER ;;
+        6b)       echo UP ;;      # k
+        6a)       echo DOWN ;;    # j
+        61)       echo ALL ;;     # a
+        71|51|04|'') echo QUIT ;; # q, Q, Ctrl-D, end of input
+        *)        echo OTHER ;;
+    esac
+}
+
+pick_get() { eval "_g=\$$1_$2"; } # <prefix> <index> -> $_g
+
+pick_draw() {
+    if [ "$PICK_DRAWN" -eq 1 ]; then printf '\033[%dA' "$PICK_LINES"; fi
+    PICK_DRAWN=1
+    _w=$((COLS - 1))
+    _dw=$((COLS - 20)); if [ "$_dw" -lt 10 ]; then _dw=10; fi
+
+    if [ "$CUR" -lt "$TOP" ]; then TOP=$CUR; fi
+    if [ "$CUR" -ge $((TOP + VIS)) ]; then TOP=$((CUR - VIS + 1)); fi
+
+    printf '\r\033[K%sSelect packages%s\n' "${ESC}[1m" "$C_OFF"
+    printf '\r\033[K%s%s%s\n' "$C_DIM" "$(printf '%s' "up/down or j/k: move   space: toggle   a: all/none   enter: apply   q: cancel" | cut -c1-"$_w")" "$C_OFF"
+
+    _i=$TOP
+    while [ "$_i" -lt $((TOP + VIS)) ]; do
+        pick_get PN "$_i"; _n=$_g
+        pick_get PD "$_i"; _d=$_g
+        pick_get PL "$_i"; _l=$_g
+        pick_get PS "$_i"; _s=$_g
+        if [ "$_s" -eq 1 ]; then _box="${C_OK}[x]${C_OFF}"; else _box="[ ]"; fi
+        _text=$(printf '%s%s' "$_d" "$_l" | cut -c1-"$_dw")
+        if [ "$_i" -eq "$CUR" ]; then
+            printf '\r\033[K> %s %s%-12s%s %s\n' "$_box" "${ESC}[1m" "$_n" "$C_OFF" "$_text"
+        else
+            printf '\r\033[K  %s %-12s %s\n' "$_box" "$_n" "$_text"
+        fi
+        _i=$((_i + 1))
+    done
+
+    if [ "$TOP" -gt 1 ] || [ $((TOP + VIS - 1)) -lt "$N" ]; then
+        printf '\r\033[K%s  (%d-%d of %d)%s\n' "$C_DIM" "$TOP" $((TOP + VIS - 1)) "$N" "$C_OFF"
+    else
+        printf '\r\033[K\n'
+    fi
+
+    pick_get PP "$CUR"
+    printf '\r\033[K%s\n' "$(printf 'provides: %s' "$_g" | cut -c1-"$_w")"
+
+    _chg=
+    _i=1
+    while [ "$_i" -le "$N" ]; do
+        pick_get PS "$_i"; _s=$_g
+        pick_get PI "$_i"; _o=$_g
+        pick_get PN "$_i"
+        if [ "$_s" -ne "$_o" ]; then
+            if [ "$_s" -eq 1 ]; then _chg="$_chg +$_g"; else _chg="$_chg -$_g"; fi
+        fi
+        _i=$((_i + 1))
+    done
+    if [ -z "$_chg" ]; then _chg=" no changes"; fi
+    printf '\r\033[K%s\n' "$(printf 'pending:%s' "$_chg" | cut -c1-"$_w")"
+}
+
+pick_packages() {
+    N=0
+    for _p in $(pkg_names); do
+        N=$((N + 1))
+        _d=$(pkg_meta "$_p" DESCRIPTION)
+        _l=$(pkg_label "$_p")
+        _v=$(pkg_provides "$_p")
+        if pkg_enabled "$_p"; then _on=1; else _on=0; fi
+        eval "PN_$N=\$_p PD_$N=\$_d PL_$N=\$_l PP_$N=\$_v PI_$N=$_on PS_$N=$_on"
+    done
+    if [ "$N" -eq 0 ]; then info "No packages found."; return 0; fi
+
+    _sz=$(stty size 2>/dev/null || true)
+    ROWS=${_sz% *}; COLS=${_sz#* }
+    case $ROWS in ''|*[!0-9]*) ROWS=24 ;; esac
+    case $COLS in ''|*[!0-9]*) COLS=80 ;; esac
+    VIS=$((ROWS - 6)); if [ "$VIS" -gt "$N" ]; then VIS=$N; fi; if [ "$VIS" -lt 3 ]; then VIS=3; fi
+    if [ "$VIS" -gt "$N" ]; then VIS=$N; fi
+    PICK_LINES=$((VIS + 5)); PICK_DRAWN=0; CUR=1; TOP=1
+
+    TTY_SAVED=$(stty -g)
+    trap 'restore_tty; exit 130' INT TERM HUP
+    stty -icanon -echo min 1 time 0
+    printf '\033[?25l'
+    pick_draw
+    _done=
+    while [ -z "$_done" ]; do
+        case $(read_key) in
+            UP)    CUR=$((CUR - 1)); if [ "$CUR" -lt 1 ]; then CUR=$N; fi ;;
+            DOWN)  CUR=$((CUR + 1)); if [ "$CUR" -gt "$N" ]; then CUR=1; fi ;;
+            SPACE) pick_get PS "$CUR"; eval "PS_$CUR=$((1 - _g))" ;;
+            ALL)   _v=1; _i=1
+                   while [ "$_i" -le "$N" ]; do pick_get PS "$_i"; if [ "$_g" -eq 0 ]; then _v=0; fi; _i=$((_i + 1)); done
+                   _i=1  # everything already selected -> clear all, otherwise select all
+                   while [ "$_i" -le "$N" ]; do eval "PS_$_i=$((1 - _v))"; _i=$((_i + 1)); done ;;
+            ENTER) _done=apply ;;
+            QUIT)  _done=cancel ;;
+        esac
+        if [ -z "$_done" ]; then pick_draw; fi
+    done
+    restore_tty
+    printf '\033[%dA\r\033[J' "$PICK_LINES"   # erase the picker
+    trap - INT TERM HUP
+
+    if [ "$_done" = cancel ]; then info "Cancelled; nothing changed."; return 0; fi
+    _adds= _rems=
+    _i=1
+    while [ "$_i" -le "$N" ]; do
+        pick_get PS "$_i"; _s=$_g
+        pick_get PI "$_i"; _o=$_g
+        pick_get PN "$_i"
+        if [ "$_s" -ne "$_o" ]; then
+            if [ "$_s" -eq 1 ]; then _adds="$_adds $_g"; else _rems="$_rems $_g"; fi
+        fi
+        _i=$((_i + 1))
+    done
+    apply_changes "$_adds" "$_rems"
+}
+
+prompt_packages() { # fallback for terminals that can't do the picker: y/N per package
+    _picks=
+    for _p in $(pkg_names); do
+        if pkg_enabled "$_p"; then continue; fi
+        info ""
+        info "${C_OK}$_p${C_OFF}$(pkg_label "$_p"): $(pkg_meta "$_p" DESCRIPTION)"
+        info "  provides: $(pkg_provides "$_p")"
+        printf '  Enable %s? [y/N] ' "$_p"
+        read -r _r || _r=
+        case $_r in y|Y) _picks="$_picks $_p" ;; esac
+    done
+    apply_changes "$_picks" ""
+}
+
+cmd_select() {
+    if ! { [ -t 0 ] && [ -t 1 ]; }; then
+        die "Interactive selection needs a terminal. Use: ./setup.sh add <package>... | --all"
+    fi
+    if can_pick; then pick_packages; else prompt_packages; fi
+}
+
 cmd_install() {
     _sh=$(target_shell)
     bootstrap "$_sh"
@@ -415,21 +607,7 @@ cmd_install() {
 
 cmd_add() {
     if [ "$ALL" -eq 1 ]; then set -- $(pkg_names); fi
-    if [ "$#" -eq 0 ]; then
-        [ -t 0 ] || die "No packages given. Usage: ./setup.sh add <package|https-url>... | --all"
-        _picks=
-        for _p in $(pkg_names); do
-            if pkg_enabled "$_p"; then continue; fi
-            info ""
-            info "${C_OK}$_p${C_OFF}$(pkg_label "$_p"): $(pkg_meta "$_p" DESCRIPTION)"
-            info "  provides: $(pkg_provides "$_p")"
-            printf '  Enable %s? [y/N] ' "$_p"
-            read -r _r || _r=
-            case $_r in y|Y) _picks="$_picks $_p" ;; esac
-        done
-        [ -n "$_picks" ] || { info "Nothing selected."; return 0; }
-        set -- $_picks
-    fi
+    if [ "$#" -eq 0 ]; then cmd_select; return 0; fi
 
     _sh=$(target_shell)
     _names= _urls=
@@ -573,7 +751,8 @@ usage() {
 Usage: ./setup.sh <command> [options]
 
   list                        Show packages and which are enabled
-  add [pkg|url]... | --all    Enable packages; a https URL downloads one (no args: pick interactively)
+  select                      Checkbox list to enable/disable packages (also: run with no command)
+  add [pkg|url]... | --all    Enable packages; a https URL downloads one (no args: same as select)
   remove <pkg>... | --all     Disable packages (--purge also deletes custom/downloaded files)
   update [pkg]...             Re-download packages that came from a URL (shows a diff first)
   new <name>                  Create a custom package from the template
@@ -594,7 +773,10 @@ EOF
 }
 
 main() {
-    if [ "$#" -eq 0 ]; then usage; return 0; fi
+    if [ "$#" -eq 0 ]; then
+        if [ -t 0 ] && [ -t 1 ]; then cmd_select; else usage; fi
+        return 0
+    fi
     _cmd=$1; shift
 
     _n=$#; _i=0
@@ -617,6 +799,7 @@ main() {
 
     case $_cmd in
         list|ls)           cmd_list ;;
+        select|pick)       cmd_select ;;
         add|enable)        cmd_add "$@" ;;
         remove|rm|disable) cmd_remove "$@" ;;
         update)            cmd_update "$@" ;;

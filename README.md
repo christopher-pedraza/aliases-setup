@@ -3,12 +3,15 @@
 Opt-in packages of aliases and functions for **bash and zsh**, on **Linux and macOS**. Enable only the ones you want, add your own or download someone else's, and remove it all cleanly at any time.
 
 ```bash
+./setup.sh                            # checkbox list: toggle packages on/off, enter to apply
 ./setup.sh list                       # packages and what each provides
-./setup.sh add git nav utils          # enable some (or `add` alone to pick interactively, `add --all`)
+./setup.sh add git nav utils          # enable some directly (or `add --all`)
 ./setup.sh add https://example.com/my-aliases.sh   # download a package (you review the code first)
 ./setup.sh remove git                 # disable one
 ./setup.sh uninstall                  # remove everything this tool added
 ```
+
+In the checkbox list, `up`/`down` (or `j`/`k`) move, `space` toggles, `a` selects or clears all, `enter` applies and `q`/`esc` cancels. Packages that are already enabled start checked, so unchecking one disables it. It's plain POSIX sh with no dependencies, scrolls in small terminals, and falls back to simple `y/N` prompts on terminals without escape-code support (`TERM=dumb`).
 
 After the first `add`, the same commands work from any shell as `aliases-setup <command>`, and `myhelp` (core package) lists every enabled command.
 

@@ -57,6 +57,20 @@ $EDITOR ~/.config/aliases-setup/packages/mytools.sh
 
 Run `./setup.sh check mytools` to validate it. The template (`template/package.sh`) documents the conventions: a `# DESCRIPTION:` header, optional `# REQUIRES:` commands, `# DESC:` comments so `myhelp` can describe each command, and portability tips (avoid bash-only syntax; GNU vs BSD flags). To contribute one to this repo, put the file in `packages/` instead. A file in `~/.config/aliases-setup/packages/` with the same name as a built-in one takes precedence.
 
+## Conflicts
+
+Packages load in name order and a later definition silently replaces an earlier one, so two packages defining the same alias or function is a trap. Three places catch it:
+
+- **In the checkbox list:** when two *checked* packages define the same name, both rows get a `!` and a `! conflict: gst (clash,git)` line appears, so you can uncheck one right there. Nothing is applied until you press enter.
+- **After `add` / `select`:** a short note lists any conflicts among enabled packages.
+- **`./setup.sh conflicts`** (`--all` to analyse every package, enabled or not) prints the full picture and exits non-zero if there are name conflicts:
+  - which packages define each name, which one wins, and the exact `./setup.sh remove ...` command to keep each side;
+  - different alias names with an identical value (redundant but harmless);
+  - names that hide a real program on your `PATH` (like `dc` the calculator), so you know to reach it with `\dc` or `command dc`;
+  - names you also defined in your own rc files, and whether yours or the package wins (it depends on whether your line is before or after the aliases-setup block).
+
+`./setup.sh check` also reports conflicts between all packages as warnings, and flags a name defined twice inside one file.
+
 ## Checking packages
 
 ```bash

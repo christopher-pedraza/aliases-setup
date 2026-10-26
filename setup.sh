@@ -27,6 +27,7 @@ OS=$(uname -s)
 BEGIN='# >>> aliases-setup >>>'
 END='# <<< aliases-setup <<<'
 
+TAB=$(printf '\t')
 YES=0 ALL=0 PURGE=0 LOAD=0 NAME_OPT= SHELL_OPT=
 CHK_N=0 CHK_FAIL=0 CHK_ERR=0 CHK_WARN=0 ISSUES=
 WORK=
@@ -112,6 +113,201 @@ enable_pkg() { # <pkg>
     ok "Enabled $1"
 }
 
+# ---------------------------------------------------------------- conflicts
+# Packages load in name order and later definitions replace earlier ones
+# silently, so two packages defining the same alias/function is a trap.
+
+pkg_defs() { # <pkg>: name<TAB>kind<TAB>value for each top-level alias/function
+    awk '
+        /^alias / {
+            l = $0; sub(/^alias +/, "", l)
+            n = l; sub(/=.*/, "", n)
+            v = l; sub(/^[^=]*=/, "", v); sub(/ +# DESC:.*/, "", v)
+            printf "%s\talias\t%s\n", n, v
+        }
+        /^[A-Za-z0-9_][A-Za-z0-9_-]*\(\) *\{/ { n = $0; sub(/\(\).*/, "", n); printf "%s\tfunction\t\n", n }
+    ' "$(pkg_file "$1")"
+}
+
+build_table() { # <packages in load order, space separated>: name pkg kind value
+    for _bp in $1; do
+        pkg_defs "$_bp" | awk -F'\t' -v p="$_bp" 'BEGIN { OFS = "\t" } { print $1, p, $2, $3 }'
+    done
+}
+
+enabled_set() {
+    for _ep in $(pkg_names); do
+        if pkg_enabled "$_ep"; then printf '%s ' "$_ep"; fi
+    done
+}
+
+find_conflicts() { # <table file>: name<TAB>"pkg (kind), ..."<TAB>winner<TAB>pkg,pkg
+    awk -F'\t' '
+        {
+            n = $1; p = $2; k = $3
+            if (!(n in seen)) { seen[n] = 1; order[++c] = n }
+            key = n SUBSEP p
+            if (!(key in has)) {
+                has[key] = 1; np[n]++
+                list[n] = list[n] (list[n] != "" ? ", " : "") p " (" k ")"
+                pl[n] = pl[n] (pl[n] != "" ? "," : "") p
+                last[n] = p
+            }
+        }
+        END { for (i = 1; i <= c; i++) { n = order[i]; if (np[n] > 1) printf "%s\t%s\t%s\t%s\n", n, list[n], last[n], pl[n] } }
+    ' "$1" | sort
+}
+
+find_same_values() { # <table file>: different alias names with an identical expansion
+    awk -F'\t' '
+        $3 == "alias" && $4 != "" {
+            key = $4 SUBSEP $1
+            if (!(key in has)) {
+                has[key] = 1; nn[$4]++
+                l[$4] = l[$4] (l[$4] != "" ? ", " : "") $1 " (" $2 ")"
+                if (!($4 in s)) { s[$4] = 1; o[++c] = $4 }
+            }
+        }
+        END { for (i = 1; i <= c; i++) if (nn[o[i]] > 1) printf "%s\t%s\n", o[i], l[o[i]] }
+    ' "$1"
+}
+
+find_exe() { # <name>: first executable file with that name on PATH
+    _old=$IFS; IFS=:
+    for _d in $PATH; do
+        if [ -f "$_d/$1" ] && [ -x "$_d/$1" ]; then IFS=$_old; printf '%s\n' "$_d/$1"; return 0; fi
+    done
+    IFS=$_old
+    return 1
+}
+
+find_shadows() { # <table file>: aliases/functions that hide a real executable
+    while IFS="$TAB" read -r _n _p _k _v; do
+        case $_n in _*) continue ;; esac
+        if [ "$_k" = alias ]; then   # `alias rm='rm -i'` wraps the command, it doesn't replace it
+            case $_v in \'*|\"*) _w=${_v#?} ;; *) _w=$_v ;; esac
+            if [ "${_w%% *}" = "$_n" ]; then continue; fi
+        fi
+        _x=$(find_exe "$_n") || continue
+        printf '%s\t%s\t%s\n' "$_n" "$_p" "$_x"
+    done < "$1" | sort -u
+}
+
+rc_defs() { # <rc file>: name, file, line, before|after the aliases-setup block
+    awk -v b="$BEGIN" -v f="$1" '
+        $0 == b { begin = NR }
+        /^[ \t]*alias +[^=]+=/ { l = $0; sub(/^[ \t]*alias +/, "", l); sub(/=.*/, "", l); nm[++c] = l; ln[c] = NR; next }
+        /^[ \t]*(function +)?[A-Za-z0-9_][A-Za-z0-9_-]*[ \t]*\(\)/ {
+            l = $0; sub(/^[ \t]*(function +)?/, "", l); sub(/[ \t]*\(\).*/, "", l); nm[++c] = l; ln[c] = NR
+        }
+        END { for (i = 1; i <= c; i++) printf "%s\t%s\t%d\t%s\n", nm[i], f, ln[i], (begin > 0 && ln[i] > begin ? "after" : "before") }
+    ' "$1"
+}
+
+pick_conflicts() { # <table file> <selected packages>: conflicts among just those
+    awk -F'\t' -v sel="$2" '
+        BEGIN { n = split(sel, a, " "); for (i = 1; i <= n; i++) on[a[i]] = 1 }
+        ($2 in on) {
+            key = $1 SUBSEP $2
+            if (!(key in has)) {
+                has[key] = 1; np[$1]++
+                pl[$1] = pl[$1] (pl[$1] != "" ? "," : "") $2
+                if (!($1 in seen)) { seen[$1] = 1; order[++c] = $1 }
+            }
+        }
+        END { for (i = 1; i <= c; i++) if (np[order[i]] > 1) printf "%s\t%s\n", order[i], pl[order[i]] }
+    ' "$1"
+}
+
+note_conflicts() { # one-glance warning after enabling packages
+    ensure_work
+    build_table "$(enabled_set)" > "$WORK/defs"
+    _c=$(find_conflicts "$WORK/defs")
+    if [ -n "$_c" ]; then
+        warn "Name conflicts between enabled packages (the later one wins):"
+        printf '%s\n' "$_c" | head -n 5 | while IFS="$TAB" read -r _n _e _w _pl; do warn "  $_n: $_e"; done
+        warn "See all of them, with fixes: ./setup.sh conflicts   (or toggle packages in ./setup.sh)"
+    fi
+}
+
+cmd_conflicts() {
+    ensure_work
+    if [ "$ALL" -eq 1 ]; then _set=$(pkg_names | tr '\n' ' '); _scope="all packages"
+    else _set=$(enabled_set); _scope="enabled packages"; fi
+    if [ -z "$_set" ]; then info "No enabled packages. Use --all to analyse every package."; return 0; fi
+    build_table "$_set" > "$WORK/defs"
+    info "${C_DIM}Analysing $_scope: $(printf '%s' "$_set" | sed 's/ *$//; s/ /, /g')${C_OFF}"
+
+    _c=$(find_conflicts "$WORK/defs")
+    info ""
+    if [ -z "$_c" ]; then
+        ok "No name conflicts between packages."
+    else
+        printf '%s%s name conflict(s): the package loaded last silently wins%s\n\n' "$C_ERR" "$(printf '%s\n' "$_c" | wc -l | tr -d ' ')" "$C_OFF"
+        printf '%s\n' "$_c" | while IFS="$TAB" read -r _n _e _w _pl; do
+            printf '  %s%-14s%s %s\n' "$C_WARN" "$_n" "$C_OFF" "$_e"
+            printf '  %-14s %swins: %s%s\n' "" "$C_DIM" "$_w" "$C_OFF"
+            for _k in $(printf '%s' "$_pl" | tr ',' ' '); do
+                _o=
+                for _x in $(printf '%s' "$_pl" | tr ',' ' '); do
+                    if [ "$_x" != "$_k" ]; then _o="$_o $_x"; fi
+                done
+                printf '  %-14s %skeep %s -> ./setup.sh remove%s%s\n' "" "$C_DIM" "$_k" "$_o" "$C_OFF"
+            done
+            echo
+        done
+    fi
+
+    _sv=$(find_same_values "$WORK/defs")
+    if [ -n "$_sv" ]; then
+        info "${C_WARN}Different names, same value (redundant, harmless):${C_OFF}"
+        printf '%s\n' "$_sv" | while IFS="$TAB" read -r _v _l; do printf '  %s  <-  %s\n' "$_v" "$_l"; done
+        info ""
+    fi
+
+    _sh_=$(find_shadows "$WORK/defs")
+    if [ -n "$_sh_" ]; then
+        info "${C_WARN}Hides a real program on your PATH (intentional? use \\name or 'command name' to reach it):${C_OFF}"
+        printf '%s\n' "$_sh_" | while IFS="$TAB" read -r _n _p _x; do printf '  %-14s (%s) hides %s\n' "$_n" "$_p" "$_x"; done
+        info ""
+    fi
+
+    : > "$WORK/rc"
+    for _rc in $(rc_candidates); do
+        if rc_has_block "$_rc"; then rc_defs "$_rc" >> "$WORK/rc"; fi
+    done
+    _ro=$(awk -F'\t' '
+        NR == FNR { if (!(($1, $2) in has)) { has[$1, $2] = 1; n[$1] = n[$1] (n[$1] != "" ? ", " : "") $2 } next }
+        ($1 in n) { printf "%s\t%s\t%s\t%s\t%s\n", $1, n[$1], $2, $3, $4 }
+    ' "$WORK/defs" "$WORK/rc")
+    if [ -n "$_ro" ]; then
+        info "${C_WARN}Also defined in your own rc files:${C_OFF}"
+        printf '%s\n' "$_ro" | while IFS="$TAB" read -r _n _pk _f _l _pos; do
+            if [ "$_pos" = after ]; then _who="yours wins (it comes after the aliases-setup block)"
+            else _who="the package wins (your definition comes before the block)"; fi
+            printf '  %-14s (%s) also at %s:%s, so %s\n' "$_n" "$_pk" "$_f" "$_l" "$_who"
+        done
+        info ""
+    fi
+    [ -z "$_c" ]
+}
+
+check_conflicts() { # all packages against each other (used by `check`)
+    ensure_work
+    build_table "$(pkg_names | tr '\n' ' ')" > "$WORK/defs"
+    _c=$(find_conflicts "$WORK/defs")
+    CHK_N=$((CHK_N + 1))
+    if [ -z "$_c" ]; then
+        printf '%s ok %s no name conflicts between packages\n' "$C_OK" "$C_OFF"
+    else
+        printf '%swarn%s name conflicts between packages (see: ./setup.sh conflicts --all)\n' "$C_WARN" "$C_OFF"
+        printf '%s\n' "$_c" | while IFS="$TAB" read -r _n _e _w _pl; do
+            printf '       %swarn:%s  %s: %s\n' "$C_WARN" "$C_OFF" "$_n" "$_e"
+        done
+        CHK_WARN=$((CHK_WARN + $(printf '%s\n' "$_c" | wc -l)))
+    fi
+}
+
 # ---------------------------------------------------------------- checks
 # Static by default: nothing is executed, so it is safe on untrusted files.
 
@@ -189,6 +385,13 @@ check_file() { # <file>: fills ISSUES and the error/warning counters
     ' "$_cf")
     [ -z "$_miss" ] || issue_w "no '# DESC:' comment, so 'myhelp' can't describe: $_miss"
 
+    _dups=$(awk '
+        /^alias /  { n = $0; sub(/^alias +/, "", n); sub(/=.*/, "", n); c[n]++ }
+        /^[A-Za-z0-9_][A-Za-z0-9_-]*\(\) *\{/ { n = $0; sub(/\(\).*/, "", n); c[n]++ }
+        END { for (n in c) if (c[n] > 1) out = out (out ? ", " : "") n; print out }
+    ' "$_cf")
+    [ -z "$_dups" ] || issue_w "defined more than once in this file (the last wins): $_dups"
+
     if [ "$LOAD" -eq 1 ]; then check_load; fi
     return 0
 }
@@ -238,6 +441,7 @@ cmd_check() {
     if [ "$#" -eq 0 ]; then
         for _p in $(pkg_names); do check_target "$_p"; done
         run_check "$REPO/template/package.sh" "template/package.sh" || true
+        check_conflicts
         # The tool's own scripts: setup.sh must be POSIX sh, the loader must load in bash and zsh.
         CHK_N=$((CHK_N + 1)); ISSUES=; _e0=$CHK_ERR
         for _sh in sh dash; do check_syntax "$REPO/setup.sh" "$_sh"; done
@@ -426,6 +630,7 @@ apply_changes() { # <packages to enable> <packages to disable>, space-separated
     done
     if [ -n "$_adds" ]; then reload_hint; fi
     if [ -n "$_rems" ]; then info "${C_DIM}Open shells keep removed aliases until restarted.${C_OFF}"; fi
+    note_conflicts
 }
 
 can_pick() { # a real terminal that understands ANSI escapes
@@ -471,13 +676,23 @@ pick_draw() {
     if [ "$PICK_DRAWN" -eq 1 ]; then printf '\033[%dA' "$PICK_LINES"; fi
     PICK_DRAWN=1
     _w=$((COLS - 1))
-    _dw=$((COLS - 20)); if [ "$_dw" -lt 10 ]; then _dw=10; fi
+    _dw=$((COLS - 22)); if [ "$_dw" -lt 10 ]; then _dw=10; fi
+
+    # Which selected packages define the same name?
+    _sel=; _i=1
+    while [ "$_i" -le "$N" ]; do
+        pick_get PS "$_i"
+        if [ "$_g" -eq 1 ]; then pick_get PN "$_i"; _sel="$_sel $_g"; fi
+        _i=$((_i + 1))
+    done
+    _cf=$(pick_conflicts "$PICK_TBL" "$_sel")
+    _cpk=" $(printf '%s\n' "$_cf" | cut -f2 | tr ',' ' ' | tr '\n' ' ') "
 
     if [ "$CUR" -lt "$TOP" ]; then TOP=$CUR; fi
     if [ "$CUR" -ge $((TOP + VIS)) ]; then TOP=$((CUR - VIS + 1)); fi
 
     printf '\r\033[K%sSelect packages%s\n' "${ESC}[1m" "$C_OFF"
-    printf '\r\033[K%s%s%s\n' "$C_DIM" "$(printf '%s' "up/down or j/k: move   space: toggle   a: all/none   enter: apply   q: cancel" | cut -c1-"$_w")" "$C_OFF"
+    printf '\r\033[K%s%s%s\n' "$C_DIM" "$(printf '%s' "up/down or j/k: move   space: toggle   a: all/none   enter: apply   q: cancel   !: conflict" | cut -c1-"$_w")" "$C_OFF"
 
     _i=$TOP
     while [ "$_i" -lt $((TOP + VIS)) ]; do
@@ -487,10 +702,11 @@ pick_draw() {
         pick_get PS "$_i"; _s=$_g
         if [ "$_s" -eq 1 ]; then _box="${C_OK}[x]${C_OFF}"; else _box="[ ]"; fi
         _text=$(printf '%s%s' "$_d" "$_l" | cut -c1-"$_dw")
+        case $_cpk in *" $_n "*) _flag="${C_WARN}!${C_OFF}" ;; *) _flag=' ' ;; esac
         if [ "$_i" -eq "$CUR" ]; then
-            printf '\r\033[K> %s %s%-12s%s %s\n' "$_box" "${ESC}[1m" "$_n" "$C_OFF" "$_text"
+            printf '\r\033[K> %s %s %s%-12s%s %s\n' "$_flag" "$_box" "${ESC}[1m" "$_n" "$C_OFF" "$_text"
         else
-            printf '\r\033[K  %s %-12s %s\n' "$_box" "$_n" "$_text"
+            printf '\r\033[K  %s %s %-12s %s\n' "$_flag" "$_box" "$_n" "$_text"
         fi
         _i=$((_i + 1))
     done
@@ -503,6 +719,12 @@ pick_draw() {
 
     pick_get PP "$CUR"
     printf '\r\033[K%s\n' "$(printf 'provides: %s' "$_g" | cut -c1-"$_w")"
+
+    if [ -n "$_cf" ]; then
+        printf '\r\033[K%s%s%s\n' "$C_WARN" "$(printf '%s\n' "$_cf" | awk -F'\t' '{ printf "%s%s (%s)", (NR > 1 ? "; " : ""), $1, $2 }' | sed 's/^/! conflict: /' | cut -c1-"$_w")" "$C_OFF"
+    else
+        printf '\r\033[K\n'
+    fi
 
     _chg=
     _i=1
@@ -535,9 +757,12 @@ pick_packages() {
     ROWS=${_sz% *}; COLS=${_sz#* }
     case $ROWS in ''|*[!0-9]*) ROWS=24 ;; esac
     case $COLS in ''|*[!0-9]*) COLS=80 ;; esac
-    VIS=$((ROWS - 6)); if [ "$VIS" -gt "$N" ]; then VIS=$N; fi; if [ "$VIS" -lt 3 ]; then VIS=3; fi
+    VIS=$((ROWS - 7)); if [ "$VIS" -gt "$N" ]; then VIS=$N; fi; if [ "$VIS" -lt 3 ]; then VIS=3; fi
     if [ "$VIS" -gt "$N" ]; then VIS=$N; fi
-    PICK_LINES=$((VIS + 5)); PICK_DRAWN=0; CUR=1; TOP=1
+    PICK_LINES=$((VIS + 6)); PICK_DRAWN=0; CUR=1; TOP=1
+    ensure_work
+    PICK_TBL="$WORK/pick.tbl"
+    build_table "$(pkg_names | tr '\n' ' ')" > "$PICK_TBL"
 
     TTY_SAVED=$(stty -g)
     trap 'restore_tty; exit 130' INT TERM HUP
@@ -622,6 +847,7 @@ cmd_add() {
     for _p in $_names; do enable_pkg "$_p"; done
     for _u in $_urls; do add_url "$_u"; done
     reload_hint
+    note_conflicts
 }
 
 cmd_remove() {
@@ -757,6 +983,7 @@ Usage: ./setup.sh <command> [options]
   update [pkg]...             Re-download packages that came from a URL (shows a diff first)
   new <name>                  Create a custom package from the template
   install                     Install the loader only, without enabling packages
+  conflicts [--all]           Show aliases/functions defined twice, who wins, and how to fix it
   status                      Show install health
   check [pkg|file|url]...     Check packages for errors (no args: everything). Never runs the code
                               unless --load is given (not allowed on URLs)
@@ -800,6 +1027,7 @@ main() {
     case $_cmd in
         list|ls)           cmd_list ;;
         select|pick)       cmd_select ;;
+        conflicts|conflict) cmd_conflicts ;;
         add|enable)        cmd_add "$@" ;;
         remove|rm|disable) cmd_remove "$@" ;;
         update)            cmd_update "$@" ;;

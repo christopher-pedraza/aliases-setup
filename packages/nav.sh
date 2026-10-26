@@ -2,7 +2,7 @@
 
 # GNU ls colours with --color, BSD/macOS ls with -G.
 _nav_color=-G
-if ls --color=auto / >/dev/null 2>&1; then _nav_color=--color=auto; fi
+if ls --color=auto / >/dev/null 2>&1; then _nav_color=--color=auto; fi # lint:ok (capability probe)
 alias ls="ls $_nav_color" # DESC: ls with colours
 unset _nav_color
 

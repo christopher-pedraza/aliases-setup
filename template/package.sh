@@ -25,6 +25,8 @@
 #     `echo -e`. Use `printf` instead of `echo -e`.
 #   - macOS has BSD tools: `sed -i`, `ls --color`, `ps --sort`, `readlink -f`,
 #     `xargs -r` and `date -d` are GNU-only. Branch on `uname -s` when needed.
+#   - Validate with `./setup.sh check __NAME__`. Tag a line `# lint:ok` if a
+#     portability warning is intentional (e.g. a GNU-vs-BSD capability probe).
 #   - Prefix private helpers with `_` and no DESC so they stay out of `myhelp`.
 #   - Quote "$@" and "$1". Single-quote aliases that use $VARS so they expand
 #     when run, not when the shell starts.

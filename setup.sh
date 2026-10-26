@@ -27,7 +27,8 @@ OS=$(uname -s)
 BEGIN='# >>> aliases-setup >>>'
 END='# <<< aliases-setup <<<'
 
-YES=0 ALL=0 PURGE=0 NAME_OPT= SHELL_OPT=
+YES=0 ALL=0 PURGE=0 LOAD=0 NAME_OPT= SHELL_OPT=
+CHK_N=0 CHK_FAIL=0 CHK_ERR=0 CHK_WARN=0 ISSUES=
 WORK=
 trap '[ -z "$WORK" ] || rm -rf "$WORK"' EXIT
 
@@ -98,7 +99,7 @@ pkg_enabled() { [ -L "$ENABLED/$1.sh" ]; }
 pkg_check() { # <pkg>: must exist and parse
     valid_name "$1" || die "Invalid package name: $1"
     _f=$(pkg_file "$1") || die "Unknown package: $1 (see: ./setup.sh list)"
-    bash -n "$_f" 2>/dev/null || die "Package '$1' has a syntax error; not enabling it."
+    run_check "$_f" "$1" 1 || die "Package '$1' failed its checks; not enabling it (see above)."
 }
 
 enable_pkg() { # <pkg>
@@ -108,6 +109,148 @@ enable_pkg() { # <pkg>
     done
     ln -sfn "$_f" "$ENABLED/$1.sh"
     ok "Enabled $1"
+}
+
+# ---------------------------------------------------------------- checks
+# Static by default: nothing is executed, so it is safe on untrusted files.
+
+issue_e() { ISSUES="${ISSUES}E $1
+"; CHK_ERR=$((CHK_ERR + 1)); }
+issue_w() { ISSUES="${ISSUES}W $1
+"; CHK_WARN=$((CHK_WARN + 1)); }
+
+lint() { # <regex> <message>; comment lines and lines tagged "lint:ok" are exempt
+    _hits=$(grep -nE "$1" "$_cf" | grep -vE '^[0-9]+:[[:space:]]*#' | grep -v 'lint:ok' | cut -d: -f1 | tr '\n' ',' | sed 's/,$//' || true)
+    if [ -n "$_hits" ]; then issue_w "line $_hits: $2"; fi
+}
+
+check_syntax() { # <file> <shell> [flag]
+    command -v "$2" >/dev/null 2>&1 || return 0
+    _out=$("$2" ${3:--n} "$1" 2>&1) || issue_e "$2 syntax error: $(printf '%s' "$_out" | head -n 2 | tr '\n' ' ')"
+}
+
+check_load() { # executes the file in a throwaway HOME; it must be silent and succeed
+    _lh=$(mktemp -d "${TMPDIR:-/tmp}/aliases-setup-load.XXXXXX")
+    for _sh in bash zsh; do
+        command -v "$_sh" >/dev/null 2>&1 || continue
+        case $_sh in bash) _opt=--norc ;; *) _opt=-f ;; esac
+        _rc=0
+        _out=$(HOME=$_lh XDG_CONFIG_HOME=$_lh/.config "$_sh" "$_opt" -c '. "$1"' _ "$_cf" 2>&1 </dev/null) || _rc=$?
+        if [ "$_rc" -ne 0 ]; then issue_e "loading in $_sh failed (exit $_rc): $(printf '%s' "$_out" | head -n 1)"
+        elif [ -n "$_out" ]; then issue_e "loading in $_sh printed output: $(printf '%s' "$_out" | head -n 1)"
+        fi
+    done
+    rm -rf "$_lh"
+}
+
+check_file() { # <file>: fills ISSUES and the error/warning counters
+    _cf=$1
+    if [ ! -s "$_cf" ]; then issue_e "file is empty"; return 0; fi
+    if head -c 512 "$_cf" | grep -qiE '<(!doctype|html)'; then
+        issue_e "looks like a web page, not a shell script (use the raw file URL)"; return 0
+    fi
+    if ! tr -d '\000' < "$_cf" | cmp -s - "$_cf"; then issue_e "file is binary"; return 0; fi
+
+    check_syntax "$_cf" bash
+    check_syntax "$_cf" zsh
+
+    # Things that would damage the user's shell when sourced.
+    _hits=$(grep -nE '^exit([[:space:]]|$)' "$_cf" | cut -d: -f1 | tr '\n' ',' | sed 's/,$//' || true)
+    [ -z "$_hits" ] || issue_e "line $_hits: top-level 'exit' would close the user's shell"
+    _hits=$(grep -nE '^set[[:space:]]+(-[A-Za-z]*[eu]|-o)' "$_cf" | cut -d: -f1 | tr '\n' ',' | sed 's/,$//' || true)
+    [ -z "$_hits" ] || issue_e "line $_hits: top-level 'set -e/-u/-o' would change the user's shell options"
+
+    # Portability between Linux/macOS and bash/zsh.
+    lint '(^|[^[:alnum:]_])echo +-e' "echo -e is not portable; use printf"
+    lint 'read( +-[A-Za-z]+)* +-[A-Za-z]*p' "read -p is bash-only; use printf then read"
+    lint 'mapfile|readarray' "mapfile/readarray are bash 4+ only (macOS has bash 3.2)"
+    lint '\$\{![A-Za-z_]' "indirect expansion \${!var} differs between bash and zsh"
+    lint 'BASH_SOURCE' "BASH_SOURCE does not exist in zsh"
+    lint '(declare|typeset) +-[A-Za-z]*A' "associative arrays are bash 4+ only"
+    lint '(^|[[:space:]])[A-Za-z_]+=\(' "arrays are 0-indexed in bash but 1-indexed in zsh"
+    lint 'sed +(-[A-Za-z]+ +)*-i' "sed -i differs between GNU and BSD/macOS"
+    lint 'readlink +-f' "readlink -f is missing on older macOS"
+    lint 'xargs +(-[A-Za-z]+ +)*-r' "xargs -r is GNU-only"
+    lint 'date +(-[A-Za-z]+ +)*-d' "date -d is GNU-only"
+    lint 'grep +(-[A-Za-z]+ +)*-[A-Za-z]*P' "grep -P is GNU-only"
+    lint 'stat +(-[A-Za-z]+ +)*-c' "stat -c is GNU-only (BSD uses -f)"
+    lint '(^|[[:space:]])ls[[:space:]].*--(color|group)' "ls --color is GNU-only (BSD uses -G)"
+    lint 'ps +.*--sort' "ps --sort is GNU-only"
+
+    if [ -z "$(sed -n 's/^# DESCRIPTION: *//p' "$_cf" | head -n 1)" ]; then
+        issue_w "missing '# DESCRIPTION:' header (shown by 'list')"
+    fi
+    _miss=$(awk '
+        fname != "" { if ($0 !~ /# DESC:/) out = out (out ? ", " : "") fname; fname = "" }
+        /^[A-Za-z0-9][A-Za-z0-9_-]*\(\) *\{/ { fname = $0; sub(/\(\).*/, "", fname); next }
+        /^alias / && !/# DESC:/ { n = $0; sub(/^alias +/, "", n); sub(/=.*/, "", n); out = out (out ? ", " : "") n }
+        END { print out }
+    ' "$_cf")
+    [ -z "$_miss" ] || issue_w "no '# DESC:' comment, so 'myhelp' can't describe: $_miss"
+
+    if [ "$LOAD" -eq 1 ]; then check_load; fi
+    return 0
+}
+
+run_check() { # <file> <label> [quiet]; prints the result, returns 1 on errors
+    CHK_N=$((CHK_N + 1))
+    ISSUES=
+    _e0=$CHK_ERR
+    check_file "$1"
+    _failed=0
+    if [ "$CHK_ERR" -gt "$_e0" ]; then _failed=1; CHK_FAIL=$((CHK_FAIL + 1)); fi
+    if [ -n "$ISSUES" ] || [ "${3:-0}" -ne 1 ]; then
+        if [ "$_failed" -eq 1 ]; then printf '%sFAIL%s %s\n' "$C_ERR" "$C_OFF" "$2"
+        else printf '%s ok %s %s\n' "$C_OK" "$C_OFF" "$2"; fi
+        printf '%s' "$ISSUES" | while IFS= read -r _l; do
+            case $_l in
+                E\ *) printf '       %serror:%s %s\n' "$C_ERR" "$C_OFF" "${_l#E }" ;;
+                W\ *) printf '       %swarn:%s  %s\n' "$C_WARN" "$C_OFF" "${_l#W }" ;;
+            esac
+        done
+    fi
+    return "$_failed"
+}
+
+check_target() { # <package name | file path | https url>
+    case $1 in
+        http://*) die "Only https:// URLs are supported: $1" ;;
+        https://*)
+            [ "$LOAD" -eq 0 ] || die "--load executes code, so it isn't allowed on URLs. Review the file, then add it."
+            ensure_work
+            _u=$(normalize_url "$1")
+            if download "$_u" "$WORK/check.sh"; then run_check "$WORK/check.sh" "$_u" || true
+            else CHK_N=$((CHK_N + 1)); CHK_FAIL=$((CHK_FAIL + 1)); CHK_ERR=$((CHK_ERR + 1)); printf '%sFAIL%s %s\n       %serror:%s download failed\n' "$C_ERR" "$C_OFF" "$_u" "$C_ERR" "$C_OFF"
+            fi ;;
+        */*|*.sh)
+            if [ -f "$1" ]; then run_check "$1" "$1" || true
+            else CHK_N=$((CHK_N + 1)); CHK_FAIL=$((CHK_FAIL + 1)); CHK_ERR=$((CHK_ERR + 1)); printf '%sFAIL%s %s\n       %serror:%s no such file\n' "$C_ERR" "$C_OFF" "$1" "$C_ERR" "$C_OFF"
+            fi ;;
+        *)
+            if _f=$(pkg_file "$1"); then run_check "$_f" "$1" || true
+            else CHK_N=$((CHK_N + 1)); CHK_FAIL=$((CHK_FAIL + 1)); CHK_ERR=$((CHK_ERR + 1)); printf '%sFAIL%s %s\n       %serror:%s unknown package\n' "$C_ERR" "$C_OFF" "$1" "$C_ERR" "$C_OFF"
+            fi ;;
+    esac
+}
+
+cmd_check() {
+    if [ "$#" -eq 0 ]; then
+        for _p in $(pkg_names); do check_target "$_p"; done
+        run_check "$REPO/template/package.sh" "template/package.sh" || true
+        # The tool's own scripts: setup.sh must be POSIX sh, the loader must load in bash and zsh.
+        CHK_N=$((CHK_N + 1)); ISSUES=; _e0=$CHK_ERR
+        for _sh in sh dash; do check_syntax "$REPO/setup.sh" "$_sh"; done
+        check_syntax "$REPO/lib/init.sh" bash
+        check_syntax "$REPO/lib/init.sh" zsh
+        if [ "$CHK_ERR" -gt "$_e0" ]; then CHK_FAIL=$((CHK_FAIL + 1)); printf '%sFAIL%s setup.sh, lib/init.sh\n' "$C_ERR" "$C_OFF"; else printf '%s ok %s setup.sh, lib/init.sh\n' "$C_OK" "$C_OFF"; fi
+        printf '%s' "$ISSUES" | while IFS= read -r _l; do printf '       %serror:%s %s\n' "$C_ERR" "$C_OFF" "${_l#E }"; done
+    else
+        for _t in "$@"; do check_target "$_t"; done
+    fi
+    command -v zsh >/dev/null 2>&1 || info "${C_DIM}note: zsh isn't installed, so zsh syntax was not checked.${C_OFF}"
+    info ""
+    info "$CHK_N checked, $CHK_FAIL failed ($CHK_ERR error(s)), $CHK_WARN warning(s)."
+    [ "$CHK_ERR" -eq 0 ]
 }
 
 # ---------------------------------------------------------------- shells and rc files
@@ -228,19 +371,9 @@ download() { # <url> <out>; https only, including redirects
     fi
 }
 
-validate_download() { # <file>
-    [ -s "$1" ] || { warn "The downloaded file is empty."; return 1; }
-    if head -c 512 "$1" | grep -qiE '<(!doctype|html)'; then
-        warn "That looks like a web page, not a shell script (use the raw file URL)."; return 1
-    fi
-    tr -d '\000' < "$1" | cmp -s - "$1" || { warn "The file is binary."; return 1; }
-    bash -n "$1" || { warn "Syntax error in the downloaded file."; return 1; }
-    if command -v zsh >/dev/null 2>&1; then zsh -n "$1" || { warn "Syntax error (zsh)."; return 1; }; fi
-}
-
-fetch_checked() { # <url> <out>
+fetch_checked() { # <url> <out>: download, then run the shared checks
     download "$1" "$2" || { warn "Download failed: $1"; return 1; }
-    validate_download "$2"
+    run_check "$2" "$1" 1
 }
 
 add_url() { # <url>
@@ -446,6 +579,8 @@ Usage: ./setup.sh <command> [options]
   new <name>                  Create a custom package from the template
   install                     Install the loader only, without enabling packages
   status                      Show install health
+  check [pkg|file|url]...     Check packages for errors (no args: everything). Never runs the code
+                              unless --load is given (not allowed on URLs)
   uninstall                   Remove what this tool added (--purge also deletes custom packages)
 
 Options:
@@ -469,6 +604,7 @@ main() {
             -y|--yes) YES=1 ;;
             --all)    ALL=1 ;;
             --purge)  PURGE=1 ;;
+            --load)   LOAD=1 ;;
             --name|--shell)
                 [ "$#" -gt 0 ] || die "$_a needs a value."
                 if [ "$_a" = --name ]; then NAME_OPT=$1; else SHELL_OPT=$1; fi
@@ -487,6 +623,7 @@ main() {
         new)               cmd_new "$@" ;;
         install)           cmd_install ;;
         status)            cmd_status ;;
+        check|test)        cmd_check "$@" ;;
         uninstall)         cmd_uninstall ;;
         help|-h|--help)    usage ;;
         *)                 usage >&2; exit 1 ;;

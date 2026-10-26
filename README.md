@@ -52,7 +52,20 @@ $EDITOR ~/.config/aliases-setup/packages/mytools.sh
 ./setup.sh add mytools
 ```
 
-The template (`template/package.sh`) documents the conventions: a `# DESCRIPTION:` header, optional `# REQUIRES:` commands, `# DESC:` comments so `myhelp` can describe each command, and portability tips (avoid bash-only syntax; GNU vs BSD flags). To contribute one to this repo, put the file in `packages/` instead. A file in `~/.config/aliases-setup/packages/` with the same name as a built-in one takes precedence.
+Run `./setup.sh check mytools` to validate it. The template (`template/package.sh`) documents the conventions: a `# DESCRIPTION:` header, optional `# REQUIRES:` commands, `# DESC:` comments so `myhelp` can describe each command, and portability tips (avoid bash-only syntax; GNU vs BSD flags). To contribute one to this repo, put the file in `packages/` instead. A file in `~/.config/aliases-setup/packages/` with the same name as a built-in one takes precedence.
+
+## Checking packages
+
+```bash
+./setup.sh check                       # every package, the template, and the tool's own scripts
+./setup.sh check git ./mine.sh         # a package name or a file path
+./setup.sh check https://example.com/k8s.sh   # download and check without installing
+./setup.sh check --load                # also source each file in a throwaway HOME (bash and zsh)
+```
+
+It exits non-zero on any error, so it works in CI or a pre-commit hook. **Errors** (the file is rejected): it doesn't parse in bash or zsh; it's empty, binary or an HTML page; it has a top-level `exit` or `set -e/-u/-o`, which would close or alter your shell; with `--load`, it fails or prints anything when sourced. **Warnings**: bash-only or GNU-only constructs that break on macOS or zsh (`echo -e`, `sed -i`, `readlink -f`, arrays, ...), a missing `# DESCRIPTION:`, and commands without a `# DESC:` that `myhelp` can't describe. Tag a deliberate line with `# lint:ok` to silence the portability warnings for it.
+
+Without `--load` nothing in the file is ever executed, so it's safe on untrusted files. `add` runs the same checks before enabling anything and refuses a package with errors, including downloaded ones.
 
 ## Sharing and downloading packages
 
@@ -64,4 +77,4 @@ Host a package file anywhere over https (a GitHub repo, a gist) and install it w
 ./setup.sh update                                                              # re-download; shows a diff before applying
 ```
 
-**A package is code that runs in every shell you open**, so `add <url>` prints the whole file and asks before installing; `update` shows a diff first. Only https is accepted (including redirects), the file must parse in bash (and zsh if installed), and downloads are capped at 256 KB. Pass `-y` only for sources you trust. Downloaded files are stored locally, so a later change at the URL never affects you until you run `update`.
+**A package is code that runs in every shell you open**, so `add <url>` prints the whole file and asks before installing; `update` shows a diff first. Only https is accepted (including redirects), the file must pass `check` (it must parse in bash, and zsh if installed), and downloads are capped at 256 KB. Pass `-y` only for sources you trust. Downloaded files are stored locally, so a later change at the URL never affects you until you run `update`.

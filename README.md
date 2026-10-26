@@ -27,8 +27,9 @@ After the first `add`, the same commands work from any shell as `aliases-setup <
 | `net` | `myip`, `localip`, `ports`, `serve`, `headers`, `pingg` |
 | `sysinfo` | `memtop`, `cputop`, `meminfo`, `diskhog`, `psg`, human-readable `df`/`du` |
 | `pkg` | `pkgup`/`pkgi`/`pkgs`/`pkgr` over apt, dnf, pacman, zypper, apk or Homebrew |
-| `utils` | `extract`, `backup`, `paths`, `o` (open), `clip` (clipboard) |
+| `utils` | `extract` (tar.gz/bz2/xz/zst, zip, gz, bz2, xz, zst, 7z, rar), `backup`, `paths`, `o` (open), `clip` (clipboard) |
 | `node` / `python` | npm and pip/venv shortcuts |
+| `uv` | `uvs` (sync), `uvr` (run), `uva`/`uvrm` (add/remove), `uvnew`, `uvenv`, `uvup`, ... for [uv](https://docs.astral.sh/uv/) |
 | `tmux` | `tn`, `ta`, `tk`, `tl`, `tka` |
 | `ibex` | KAUST Ibex: `ibex-cpu`, `ibex-gpu`, `ibex-mover` ssh logins (set `export IBEX_USER=<your-kaust-id>` first), plus Slurm queue, session and quota shortcuts |
 
@@ -55,7 +56,7 @@ $EDITOR ~/.config/aliases-setup/packages/mytools.sh
 ./setup.sh add mytools
 ```
 
-Run `./setup.sh check mytools` to validate it. The template (`template/package.sh`) documents the conventions: a `# DESCRIPTION:` header, optional `# REQUIRES:` commands, `# DESC:` comments so `myhelp` can describe each command, and portability tips (avoid bash-only syntax; GNU vs BSD flags). To contribute one to this repo, put the file in `packages/` instead. A file in `~/.config/aliases-setup/packages/` with the same name as a built-in one takes precedence.
+Run `./setup.sh check mytools` to validate it. A package can use tools you don't have installed: `# REQUIRES:` only makes `add` print a warning, and the commands are still defined (they fail with the usual "command not found" if you run them without the tool, or with a friendlier message where a package checks, like `extract`). The template (`template/package.sh`) documents the conventions: a `# DESCRIPTION:` header, optional `# REQUIRES:` commands, `# DESC:` comments so `myhelp` can describe each command, and portability tips (avoid bash-only syntax; GNU vs BSD flags). To contribute one to this repo, put the file in `packages/` instead. A file in `~/.config/aliases-setup/packages/` with the same name as a built-in one takes precedence.
 
 ## Updating
 

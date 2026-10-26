@@ -1,7 +1,13 @@
 # DESCRIPTION: Everyday helpers: extract archives, back up files, open, clipboard, PATH
 
+_extract_need() { # <tool>: say clearly when an archive type needs a tool you don't have
+    if command -v "$1" >/dev/null 2>&1; then return 0; fi
+    echo "extract: this archive needs '$1', which isn't installed" >&2
+    return 1
+}
+
 extract() {
-    # DESC: Extract any common archive. Usage: extract <file>...
+    # DESC: Extract any common archive (tar.*, zip, zst, 7z, rar...). Usage: extract <file>...
     if [ "$#" -eq 0 ]; then echo "Usage: extract <archive>..." >&2; return 1; fi
     local f
     for f in "$@"; do
@@ -10,13 +16,15 @@ extract() {
             *.tar.gz|*.tgz)   tar xzf "$f" ;;
             *.tar.bz2|*.tbz2) tar xjf "$f" ;;
             *.tar.xz|*.txz)   tar xJf "$f" ;;
+            *.tar.zst|*.tzst) _extract_need zstd && zstd -dc -- "$f" | tar xf - ;;
             *.tar)            tar xf "$f" ;;
-            *.zip)            unzip "$f" ;;
+            *.zip)            _extract_need unzip && unzip "$f" ;;
             *.gz)             gunzip "$f" ;;
             *.bz2)            bunzip2 "$f" ;;
-            *.xz)             unxz "$f" ;;
-            *.7z)             7z x "$f" ;;
-            *.rar)            unrar x "$f" ;;
+            *.xz)             _extract_need unxz && unxz "$f" ;;
+            *.zst)            _extract_need zstd && zstd -d -- "$f" ;;
+            *.7z)             _extract_need 7z && 7z x "$f" ;;
+            *.rar)            _extract_need unrar && unrar x "$f" ;;
             *)                echo "extract: don't know how to extract '$f'" >&2 ;;
         esac
     done

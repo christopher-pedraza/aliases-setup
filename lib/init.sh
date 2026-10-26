@@ -1,17 +1,24 @@
-# aliases-setup loader. Installed by setup.sh and sourced from your rc file.
-# Safe to edit or delete; `setup.sh uninstall` removes it.
+# aliases-setup loader, sourced from your rc file (bash and zsh).
+# Installed by setup.sh; safe to edit or delete. `setup.sh uninstall` removes it.
 
-# Only load in interactive shells (aliases are useless elsewhere, and this
-# keeps scp/rsync/ssh-command sessions untouched).
+# Interactive shells only: aliases are useless elsewhere, and this leaves
+# scp/rsync/ssh-command sessions untouched.
 case $- in *i*) ;; *) return 0 ;; esac
 
 _as_home="${XDG_CONFIG_HOME:-$HOME/.config}/aliases-setup"
 
-# Dangling symlinks (package removed or repo moved) fail the -r test and are
-# skipped silently, so a stale entry can never break shell startup.
-for _as_pkg in "$_as_home"/enabled/*.sh; do
-    [ -r "$_as_pkg" ] && . "$_as_pkg"
-done
+_as_load() {
+    # zsh aborts on a glob with no match; bash just keeps the pattern literal.
+    if [ -n "${ZSH_VERSION-}" ]; then setopt localoptions nullglob; fi
+    for _as_pkg in "$_as_home"/enabled/*.sh; do
+        # Dangling symlinks (package deleted, repo moved) fail -r and are
+        # skipped, so a stale entry can never break shell startup.
+        if [ -r "$_as_pkg" ]; then . "$_as_pkg"; fi
+    done
+}
+_as_load
+unset -f _as_load
+unset _as_pkg
 
 # Convenience wrapper: `aliases-setup list|add|remove|...`
 aliases-setup() {
@@ -24,5 +31,3 @@ aliases-setup() {
         return 1
     fi
 }
-
-unset _as_pkg

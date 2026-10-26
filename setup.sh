@@ -28,7 +28,8 @@ BEGIN='# >>> aliases-setup >>>'
 END='# <<< aliases-setup <<<'
 
 TAB=$(printf '\t')
-YES=0 ALL=0 PURGE=0 LOAD=0 NAME_OPT= SHELL_OPT=
+UPSTREAM_URL='https://github.com/christopher-pedraza/aliases-setup'
+YES=0 ALL=0 PURGE=0 LOAD=0 CHECK_ONLY=0 NAME_OPT= SHELL_OPT=
 CHK_N=0 CHK_FAIL=0 CHK_ERR=0 CHK_WARN=0 ISSUES=
 WORK=
 TTY_SAVED=
@@ -308,6 +309,94 @@ check_conflicts() { # all packages against each other (used by `check`)
     fi
 }
 
+# ---------------------------------------------------------------- versions and upgrades
+# Releases are git tags (vX.Y.Z) created by CI whenever VERSION changes on main.
+# A git checkout upgrades by fast-forwarding to the newest tag on `origin`.
+
+cur_version() {
+    if [ -f "$REPO/VERSION" ]; then tr -d ' \r\n' < "$REPO/VERSION"; else printf 'unknown'; fi
+    return 0
+}
+
+ver_num() { # X.Y.Z -> a comparable integer
+    printf '%s' "$1" | awk -F. '{ printf "%d", $1 * 1000000 + $2 * 1000 + $3 }'
+}
+
+is_checkout() {
+    command -v git >/dev/null 2>&1 && [ "$(git -C "$REPO" rev-parse --show-toplevel 2>/dev/null)" = "$REPO" ]
+}
+
+latest_remote_tag() { # newest vX.Y.Z tag on origin; returns 2 if origin can't be reached
+    _lt=$(git -C "$REPO" ls-remote --tags --refs origin 'v*' 2>/dev/null) || return 2
+    printf '%s\n' "$_lt" | sed -n 's#.*refs/tags/##p' | awk '
+        /^v[0-9]+\.[0-9]+\.[0-9]+$/ {
+            split(substr($0, 2), p, "."); n = p[1] * 1000000 + p[2] * 1000 + p[3]
+            if (!seen || n > max) { max = n; best = $0; seen = 1 }
+        }
+        END { if (seen) print best }'
+}
+
+cmd_version() {
+    _sha=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || true)
+    info "aliases-setup $(cur_version)${_sha:+ ($_sha)}"
+}
+
+post_upgrade() { # <old commit>
+    if [ -f "$CONF/init.sh" ]; then   # the loader is a copy, so refresh it
+        cp "$REPO/lib/init.sh" "$CONF/init.sh"
+        printf '%s\n' "$REPO" > "$CONF/repo"
+        info "Refreshed the loader."
+    fi
+    _pc=$(git -C "$REPO" diff --name-status "$1" HEAD -- packages | sed 's#packages/##; s#\.sh$##')
+    _new=$(printf '%s\n' "$_pc" | awk '$1 == "A" { printf "%s ", $2 }')
+    _upd=$(printf '%s\n' "$_pc" | awk '$1 == "M" { printf "%s ", $2 }')
+    _gone=$(printf '%s\n' "$_pc" | awk '$1 == "D" { printf "%s ", $2 }')
+    if [ -n "$_upd" ]; then
+        info "Updated packages: $_upd"
+        info "${C_DIM}  (enabled ones are live in your next shell; no reinstall needed)${C_OFF}"
+    fi
+    if [ -n "$_new" ]; then info "New packages: ${C_OK}${_new}${C_OFF}(enable with ./setup.sh)"; fi
+    for _g in $_gone; do
+        if pkg_enabled "$_g"; then warn "Package '$_g' was removed upstream but is still enabled: ./setup.sh remove $_g"; fi
+    done
+    note_conflicts
+}
+
+cmd_upgrade() {
+    is_checkout || die "This copy isn't a git checkout, so it can't update itself. Get the latest release from $UPSTREAM_URL/releases"
+    _cur=$(cur_version)
+    _rc=0
+    _tag=$(latest_remote_tag) || _rc=$?
+    if [ "$_rc" -eq 2 ]; then die "Couldn't reach 'origin' to look for releases. Check your connection and remote."; fi
+    if [ -z "$_tag" ]; then info "No releases found on origin yet (current version: $_cur)."; return 0; fi
+
+    _latest=${_tag#v}
+    if [ "$(ver_num "$_latest")" -le "$(ver_num "$_cur")" ]; then
+        if [ "$_latest" = "$_cur" ]; then ok "You have the latest version ($_cur)."
+        else info "You're ahead of the latest release ($_tag); this copy is $_cur."; fi
+        return 0
+    fi
+    info "${C_WARN}Update available: $_cur -> $_latest${C_OFF}"
+    if [ "$CHECK_ONLY" -eq 1 ]; then info "Install it with: ./setup.sh upgrade"; return 10; fi
+
+    git -C "$REPO" fetch --quiet origin "refs/tags/$_tag:refs/tags/$_tag" || die "Couldn't fetch $_tag."
+    if [ -n "$(git -C "$REPO" status --porcelain --untracked-files=no)" ]; then
+        die "You have uncommitted changes in $REPO. Commit or stash them, then run upgrade again."
+    fi
+    if ! git -C "$REPO" merge-base --is-ancestor HEAD "$_tag"; then
+        die "This copy has commits that aren't in $_tag, so it can't be fast-forwarded. Merge it yourself: git -C '$REPO' merge $_tag"
+    fi
+    info "Changes:"
+    git -C "$REPO" log --oneline "HEAD..$_tag" | head -n 20 | sed 's/^/  /'
+    if ! confirm "Update to $_tag?"; then info "Aborted."; return 0; fi
+
+    _old=$(git -C "$REPO" rev-parse HEAD)
+    git -C "$REPO" merge --ff-only --quiet "$_tag"
+    ok "Updated to $_latest."
+    post_upgrade "$_old"
+    info "${C_DIM}Open a new shell to pick up the changes.${C_OFF}"
+}
+
 # ---------------------------------------------------------------- checks
 # Static by default: nothing is executed, so it is safe on untrusted files.
 
@@ -445,9 +534,12 @@ cmd_check() {
         # The tool's own scripts: setup.sh must be POSIX sh, the loader must load in bash and zsh.
         CHK_N=$((CHK_N + 1)); ISSUES=; _e0=$CHK_ERR
         for _sh in sh dash; do check_syntax "$REPO/setup.sh" "$_sh"; done
+        if ! printf '%s\n' "$(cur_version)" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            issue_e "VERSION must look like 1.2.3 (got '$(cur_version)'); releases are cut from it"
+        fi
         check_syntax "$REPO/lib/init.sh" bash
         check_syntax "$REPO/lib/init.sh" zsh
-        if [ "$CHK_ERR" -gt "$_e0" ]; then CHK_FAIL=$((CHK_FAIL + 1)); printf '%sFAIL%s setup.sh, lib/init.sh\n' "$C_ERR" "$C_OFF"; else printf '%s ok %s setup.sh, lib/init.sh\n' "$C_OK" "$C_OFF"; fi
+        if [ "$CHK_ERR" -gt "$_e0" ]; then CHK_FAIL=$((CHK_FAIL + 1)); printf '%sFAIL%s setup.sh, lib/init.sh, VERSION\n' "$C_ERR" "$C_OFF"; else printf '%s ok %s setup.sh, lib/init.sh, VERSION\n' "$C_OK" "$C_OFF"; fi
         printf '%s' "$ISSUES" | while IFS= read -r _l; do printf '       %serror:%s %s\n' "$C_ERR" "$C_OFF" "${_l#E }"; done
     else
         for _t in "$@"; do check_target "$_t"; done
@@ -884,12 +976,16 @@ cmd_list() {
 }
 
 cmd_status() {
+    info "Version: $(cur_version)"
     if [ -f "$CONF/init.sh" ]; then ok "Loader:  $CONF/init.sh"; else warn "Loader:  not installed"; fi
     _found=0
     for _rc in $(rc_candidates); do
         if rc_has_block "$_rc"; then ok "RC block: $_rc"; _found=1; fi
     done
     if [ "$_found" -eq 0 ]; then warn "RC block: not present in any rc file"; fi
+    if [ -f "$CONF/init.sh" ] && ! cmp -s "$REPO/lib/init.sh" "$CONF/init.sh"; then
+        warn "Loader:  out of date with this checkout; run ./setup.sh install to refresh it"
+    fi
     info "Repo:    $(cat "$CONF/repo" 2>/dev/null || echo '-')"
     if [ -f "$CONF/repo" ] && [ "$(cat "$CONF/repo")" != "$REPO" ]; then
         warn "         (differs from this checkout, $REPO; re-run 'add' to repoint)"
@@ -987,6 +1083,8 @@ Usage: ./setup.sh <command> [options]
   status                      Show install health
   check [pkg|file|url]...     Check packages for errors (no args: everything). Never runs the code
                               unless --load is given (not allowed on URLs)
+  version                     Show the installed version
+  upgrade [--check]           Update to the newest release (--check only reports; exit 10 = update available)
   uninstall                   Remove what this tool added (--purge also deletes custom packages)
 
 Options:
@@ -1014,6 +1112,7 @@ main() {
             --all)    ALL=1 ;;
             --purge)  PURGE=1 ;;
             --load)   LOAD=1 ;;
+            --check)  CHECK_ONLY=1 ;;
             --name|--shell)
                 [ "$#" -gt 0 ] || die "$_a needs a value."
                 if [ "$_a" = --name ]; then NAME_OPT=$1; else SHELL_OPT=$1; fi
@@ -1035,10 +1134,12 @@ main() {
         install)           cmd_install ;;
         status)            cmd_status ;;
         check|test)        cmd_check "$@" ;;
+        version|--version|-V) cmd_version ;;
+        upgrade)           cmd_upgrade ;;
         uninstall)         cmd_uninstall ;;
         help|-h|--help)    usage ;;
         *)                 usage >&2; exit 1 ;;
     esac
 }
 
-main "$@"
+main "$@"; exit $?

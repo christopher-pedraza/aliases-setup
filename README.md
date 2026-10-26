@@ -57,6 +57,18 @@ $EDITOR ~/.config/aliases-setup/packages/mytools.sh
 
 Run `./setup.sh check mytools` to validate it. The template (`template/package.sh`) documents the conventions: a `# DESCRIPTION:` header, optional `# REQUIRES:` commands, `# DESC:` comments so `myhelp` can describe each command, and portability tips (avoid bash-only syntax; GNU vs BSD flags). To contribute one to this repo, put the file in `packages/` instead. A file in `~/.config/aliases-setup/packages/` with the same name as a built-in one takes precedence.
 
+## Updating
+
+```bash
+./setup.sh version              # which version you have
+./setup.sh upgrade --check      # is there a newer release? (exit code 10 = yes, 0 = up to date)
+./setup.sh upgrade              # show what changed, then update
+```
+
+Releases are git tags (`vX.Y.Z`) that CI creates; `upgrade` fast-forwards your checkout to the newest one, so you get exactly the released code rather than whatever is on `main`. It refuses if you have uncommitted changes or local commits that can't be fast-forwarded, and it needs a git checkout of this repo (it prints where to download a release otherwise).
+
+**What happens to packages you already enabled?** They're symlinks into the repo, so an updated package is live in your next shell with nothing to reinstall, and new commands in it (say, new `ibex` aliases) just appear. `upgrade` then tells you which packages were updated, which are new (new packages are never enabled for you), and which were removed upstream while still enabled (`remove` clears those). It also refreshes the copied loader (`~/.config/aliases-setup/init.sh`) and warns about any new name conflicts. Packages you downloaded from a URL are separate: update those with `./setup.sh update`. A plain `git pull` works too; `./setup.sh status` then tells you if the loader needs a refresh (`./setup.sh install`).
+
 ## Conflicts
 
 Packages load in name order and a later definition silently replaces an earlier one, so two packages defining the same alias or function is a trap. Three places catch it:

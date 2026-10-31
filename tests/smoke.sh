@@ -31,11 +31,11 @@ for f in .bashrc .bash_profile .zshrc; do printf 'alias keep_%s=true\n# no newli
 
 load_bash() {
     "$BASH_BIN" --norc -i -c '. "$HOME/.config/aliases-setup/init.sh"
-        type tn gst mkcd ibex-cpu >/dev/null && myhelp | grep -q "Git"' </dev/null
+        type tn gst mkcd ibex-cpu safe gpus shist sshtun pt jl every >/dev/null && myhelp | grep -q "Git"' </dev/null
 }
 load_zsh() {
     zsh -f -i -c '. "$HOME/.config/aliases-setup/init.sh"
-        whence -w tn gst mkcd ibex-cpu >/dev/null && myhelp | grep -q "Git"' </dev/null
+        whence -w tn gst mkcd ibex-cpu safe gpus shist sshtun pt jl every >/dev/null && myhelp | grep -q "Git"' </dev/null
 }
 restored() {
     for f in .bashrc .bash_profile .zshrc; do same "$T/orig$f" "$HOME/$f" || return 1; done

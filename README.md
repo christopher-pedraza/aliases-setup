@@ -30,6 +30,13 @@ After the first `add`, the same commands work from any shell as `aliases-setup <
 | `utils` | `extract` (tar.gz/bz2/xz/zst, zip, gz, bz2, xz, zst, 7z, rar), `backup`, `paths`, `o` (open), `clip` (clipboard) |
 | `node` / `python` | npm and pip/venv shortcuts |
 | `uv` | `uvs` (sync), `uvr` (run), `uva`/`uvrm` (add/remove), `uvnew`, `uvenv`, `uvup`, ... for [uv](https://docs.astral.sh/uv/) |
+| `saferun` | `safe` runs a command under memory/CPU/time limits (systemd), optionally saving output to a log; `logrun`, `timed`, `alertme`, `safels`, `oomlog` |
+| `gpu` | `gpus` (usage table), `gpuwho` (processes per GPU), `gpufree`, `gpurun` (run on an idle GPU via `CUDA_VISIBLE_DEVICES`) |
+| `slurm` | Generic Slurm: `shist` (job history), `sjeff` (efficiency), `snodes`, `sfree`, `slog` (follow a job's output) |
+| `ssh` | `sshtmux` (attach to remote tmux), `sshtun` (port forward, e.g. Jupyter), `sshhosts`, `sshkeys`, `sshgen` |
+| `pydev` | `pt`/`ptf`/`ptk`/`ptd`/`ptc` pytest shortcuts (use `uv run` in uv projects), `pyprof`/`pytop` (py-spy), `pyclean` |
+| `data` | `jl`, `jlkeys`, `nlines`, `csvhead`, `csvcols` for JSONL and CSV, plain or `.gz`/`.zst` |
+| `watchx` | `every` (portable `watch`), `retry`, `after <pid> <cmd>` |
 | `tmux` | `tn`, `ta`, `tk`, `tl`, `tka` |
 | `ibex` | KAUST Ibex: `ibex-cpu`, `ibex-gpu`, `ibex-mover` ssh logins (set `export IBEX_USER=<your-kaust-id>` first), plus Slurm queue, session and quota shortcuts |
 

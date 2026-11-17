@@ -32,10 +32,15 @@ ibex-mover() {
 }
 
 # --- Queue ---
-alias sq='squeue --me' # DESC: [cyan] Your jobs in the queue
-alias sqs='squeue --me --start' # DESC: [cyan] Estimated start times for your pending jobs
-alias sqw='watch -n 2 squeue --me' # DESC: [cyan] Watch your queue (refreshes every 2s)
-alias sq_clean='squeue --me --format="%.10i %.15P %.30j %.10T %.10M %.10L %.6D %R"' # DESC: [cyan] Your jobs with ID, partition, name, state, time, nodes
+alias sq='squeue --me -O "JobID:12 ,Partition:12 ,Name:24 ,State:10 ,TimeUsed:11 ,TimeLeft:11 ,NumNodes:6 ,ReasonList"' # DESC: [cyan] Your jobs in the queue (clean view)
+alias sq_full='squeue --me -O "JobID:12 ,Partition:12 ,Name:24 ,State:10 ,TimeUsed:11 ,TimeLeft:11 ,NumNodes:6 ,NumCPUs:6 ,MinMemory:11 ,tres-per-node:14 ,QOS:10 ,ReasonList"' # DESC: [cyan] Your jobs with CPUs, memory, GPUs/TRES, and QOS
+alias sqs='squeue --me --start --format="%.12i %.12P %.24j %.19S %R"' # DESC: [cyan] Estimated start times for your pending jobs
+
+sqw() {
+    # DESC: [cyan] Watch your queue (refreshes every 2s)
+    watch -n 2 'squeue --me -O "JobID:12 ,Partition:12 ,Name:24 ,State:10 ,TimeUsed:11 ,TimeLeft:11 ,NumNodes:6 ,ReasonList"'
+}
+
 alias sjob='scontrol show job' # DESC: [cyan] Full details of a job. Usage: sjob <job_id>
 alias scancelall='scancel -u $USER' # DESC: DANGER: cancel ALL your jobs, running and pending
 
@@ -47,8 +52,48 @@ jobwhy() {
 
 # --- Interactive sessions ---
 alias idebug='srun --partition=debug --gpus=1 --cpus-per-task=4 --mem=16G --time=00:30:00 --pty bash' # DESC: Interactive GPU debug session (30 min)
-alias igpu='srun --partition=batch --gpus=1 --cpus-per-task=4 --mem=32G --time=2:00:00 --pty bash' # DESC: Interactive GPU session (2 h)
-alias icpu='srun --partition=batch --cpus-per-task=4 --mem=16G --time=2:00:00 --pty bash' # DESC: Interactive CPU-only session (2 h)
+
+igpu() {
+    # DESC: Interactive GPU session. Usage: igpu [gpus (1)] [constraint (any)] [cores (4)] [mem (32G)] [time (02:00:00)]
+    local gpus="${1:-1}"
+    local constraint="${2:-}"
+    local cores="${3:-4}"
+    local mem="${4:-32G}"
+    local time="${5:-02:00:00}"
+    local gpu_req=""
+
+    # Accepts 'any', 'none', or empty string to skip constraints
+    if [ -z "$constraint" ] || [ "$constraint" = "any" ] || [ "$constraint" = "none" ]; then
+        echo "Requesting GPU session: $gpus GPU(s) (any), $cores cores, $mem RAM, for $time..."
+    else
+        gpu_req="--constraint=$constraint"
+        echo "Requesting GPU session: $gpus $constraint GPU(s), $cores cores, $mem RAM, for $time..."
+    fi
+
+    srun --job-name=interactive_gpu \
+         --partition=batch \
+         ${gpu_req:+"$gpu_req"} \
+         --gpus="$gpus" \
+         --cpus-per-task="$cores" \
+         --mem="$mem" \
+         --time="$time" \
+         --pty bash -i
+}
+
+icpu() {
+    # DESC: Interactive CPU-only session. Usage: icpu [cores (4)] [mem (16G)] [time (02:00:00)]
+    local cores="${1:-4}"
+    local mem="${2:-16G}"
+    local time="${3:-02:00:00}"
+
+    echo "Requesting CPU session: $cores cores, $mem RAM, for $time..."
+    srun --job-name=interactive_cpu \
+         --partition=batch \
+         --cpus-per-task="$cores" \
+         --mem="$mem" \
+         --time="$time" \
+         --pty bash -i
+}
 
 # --- Limits and storage ---
 slimits() {
@@ -60,8 +105,18 @@ slimits() {
     fi
 }
 
-alias myquota='echo "--- HOME ---"; quota -s; echo ""; echo "--- SCRATCH ---"; df -h /ibex/user/$USER' # DESC: [cyan] Home and Scratch quotas
+myquota() {
+    # DESC: [cyan] Display home and scratch storage summary
+    echo "---------------- STORAGE SUMMARY ----------------"
+    printf 'HOME:    '
+    quota -s | awk '/home/{getline; print $1 " used of " $3}'
+    printf 'SCRATCH: '
+    df -h "/ibex/user/$USER" | awk 'END{print $3 " used of " $2 " (" $5 ")"}'
+    echo "-------------------------------------------------"
+}
+
 alias cdscratch='cd /ibex/user/$USER' # DESC: Jump to your Scratch directory
+alias diskusage='ncdu' # DESC: [cyan] Interactive disk space explorer
 
 # --- On a compute node ---
 alias gpuwatch='watch -n 1 nvidia-smi' # DESC: [cyan] Watch GPU usage (refreshes every 1s)

@@ -39,3 +39,46 @@ gprune() {
         git branch -d "$b"
     done
 }
+
+guser() {
+    # DESC: Show or configure git user.name and user.email (default --global). Usage: guser [--local|--global] [<name> <email>]
+    local scope="" name email label
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -l|--local)  scope="--local"; shift ;;
+            -g|--global) scope="--global"; shift ;;
+            -h|--help)
+                echo "Usage: guser [--local|--global] [<name> <email>]"
+                return 0
+                ;;
+            --) shift; break ;;
+            -*)
+                echo "guser: unknown option '$1'" >&2
+                echo "Usage: guser [--local|--global] [<name> <email>]" >&2
+                return 1
+                ;;
+            *) break ;;
+        esac
+    done
+    if [ "$#" -eq 0 ]; then
+        if [ -n "$scope" ]; then
+            name=$(git config "$scope" user.name 2>/dev/null) || name=""
+            email=$(git config "$scope" user.email 2>/dev/null) || email=""
+            label=" (${scope#--})"
+        else
+            name=$(git config user.name 2>/dev/null) || name=""
+            email=$(git config user.email 2>/dev/null) || email=""
+            label=""
+        fi
+        printf 'user.name%s:  %s\n' "$label" "${name:-(not set)}"
+        printf 'user.email%s: %s\n' "$label" "${email:-(not set)}"
+        return 0
+    fi
+    if [ "$#" -ne 2 ] || [ -z "$1" ] || [ -z "$2" ]; then
+        echo "Usage: guser [--local|--global] [<name> <email>]" >&2
+        return 1
+    fi
+    scope="${scope:---global}"
+    git config "$scope" user.name "$1" && git config "$scope" user.email "$2" || return
+    printf 'Set %s git identity: %s <%s>\n' "${scope#--}" "$1" "$2"
+}

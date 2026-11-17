@@ -59,7 +59,7 @@ _pkg() {
 }
 
 pkgup() {
-    # DESC: Update package lists and upgrade installed packages
+    # DESC: [yellow] Update package lists and upgrade installed packages
     _pkg update
 }
 
@@ -70,13 +70,13 @@ pkgi() {
 }
 
 pkgs() {
-    # DESC: Search for a package. Usage: pkgs <term>
+    # DESC: [cyan] Search for a package. Usage: pkgs <term>
     if [ "$#" -eq 0 ]; then echo "Usage: pkgs <term>" >&2; return 1; fi
     _pkg search "$@"
 }
 
 pkgr() {
-    # DESC: Remove packages. Usage: pkgr <name>...
+    # DESC: [yellow] Remove packages. Usage: pkgr <name>...
     if [ "$#" -eq 0 ]; then echo "Usage: pkgr <package>..." >&2; return 1; fi
     _pkg remove "$@"
 }

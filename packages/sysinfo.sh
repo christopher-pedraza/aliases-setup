@@ -1,4 +1,5 @@
 # DESCRIPTION: Disk, memory and process helpers (Linux and macOS)
+# COLOR: cyan
 
 alias df='df -h' # DESC: Human-readable disk free
 alias du='du -h' # DESC: Human-readable disk usage

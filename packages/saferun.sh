@@ -141,7 +141,7 @@ alertme() {
 }
 
 safels() {
-    # DESC: List running `safe` jobs with current/peak memory and their limit
+    # DESC: [cyan] List running `safe` jobs with current/peak memory and their limit
     local u any=""
     for u in $(systemctl --user list-units --type=scope --no-legend --plain 'safe-*' 2>/dev/null | awk '{print $1}'); do
         any=1
@@ -158,7 +158,7 @@ safels() {
 }
 
 oomlog() {
-    # DESC: Recent kernel out-of-memory kills. Usage: oomlog [since, default "1 day ago"]
+    # DESC: [cyan] Recent kernel out-of-memory kills. Usage: oomlog [since, default "1 day ago"]
     journalctl -k --no-pager --since "${1:-1 day ago}" 2>&1 |
         grep -Ei 'out of memory|oom-kill|killed process|memory cgroup' || echo "No OOM kills found (or no permission: join the systemd-journal group)."
 }

@@ -1,5 +1,6 @@
 # DESCRIPTION: Slurm cluster helpers: job history, efficiency, free nodes, follow a job's output
 # REQUIRES: sinfo sacct scontrol
+# COLOR: cyan
 #
 # Generic Slurm. The `ibex` package has queue shortcuts (sq, sqs, sjob, ...) and
 # interactive-session aliases; these are complementary and use different names.

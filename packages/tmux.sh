@@ -12,9 +12,9 @@ ta() {
 }
 
 tk() {
-    # DESC: Kill tmux session. Usage: tk <name>
+    # DESC: [yellow] Kill tmux session. Usage: tk <name>
     if [ -z "$1" ]; then echo "Provide name"; else tmux kill-session -t "$1"; fi
 }
 
-alias tl='tmux ls' # DESC: List all active tmux sessions
-alias tka='tmux kill-server' # DESC: Kill ALL tmux sessions
+alias tl='tmux ls' # DESC: [cyan] List all active tmux sessions
+alias tka='tmux kill-server' # DESC: [red] Kill ALL tmux sessions

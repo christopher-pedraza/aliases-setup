@@ -13,7 +13,7 @@ Opt-in packages of aliases and functions for **bash and zsh**, on **Linux and ma
 
 In the interactive setup UI, `up`/`down` (or `j`/`k`) browse packages while the right pane dynamically shows the highlighted package's requirements, conflicts, and every command with its description (`Tab` or `PgUp`/`PgDn` scrolls long command lists). Press `space` to toggle, `a` to select/clear all, `enter` to apply, and `q`/`esc` to cancel. Action shortcuts (`c` verify, `u` check updates, `x` conflicts, `s` status, `m` full actions menu for upgrades/URLs/new/uninstall) let you run maintenance tasks without CLI flags. Packages that are already enabled start checked, so unchecking one disables it. It's plain POSIX sh with no dependencies, adapts to small terminals, and falls back to simple `y/N` prompts on terminals without escape-code support (`TERM=dumb`).
 
-After the first `add`, the same commands work from any shell as `aliases-setup <command>`, and `myhelp` (core package) lists every enabled command.
+After the first `add`, the same commands work from any shell as `aliases-setup <command>`, and `myhelp` (`core` package) lists or searches enabled commands (`myhelp git`, `myhelp -p`, `myhelp -a <query>`).
 
 ## Packages
 

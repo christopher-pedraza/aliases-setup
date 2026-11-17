@@ -1,13 +1,13 @@
 # DESCRIPTION: Docker and Compose shortcuts
 # REQUIRES: docker
 
-alias dps='docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"' # DESC: Running containers, compact
-alias dpsa='docker ps -a --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"' # DESC: All containers, compact
-alias dimg='docker images' # DESC: List images
-alias dclean='docker system prune' # DESC: Remove stopped containers, dangling images, unused networks
+alias dps='docker ps --format "table {{.Names}}\t{{.Image}}\t{{.Status}}\t{{.Ports}}"' # DESC: [cyan] Running containers, compact
+alias dpsa='docker ps -a --format "table {{.Names}}\t{{.Image}}\t{{.Status}}"' # DESC: [cyan] All containers, compact
+alias dimg='docker images' # DESC: [cyan] List images
+alias dclean='docker system prune' # DESC: [yellow] Remove stopped containers, dangling images, unused networks
 alias dcu='dc up -d' # DESC: Compose up (detached)
 alias dcd='dc down' # DESC: Compose down
-alias dcl='dc logs -f --tail=100' # DESC: Follow compose logs
+alias dcl='dc logs -f --tail=100' # DESC: [cyan] Follow compose logs
 
 dc() {
     # DESC: Docker Compose (v2 plugin or legacy docker-compose). Usage: dc <args>
@@ -25,12 +25,12 @@ dex() {
 }
 
 dlogs() {
-    # DESC: Follow a container's logs. Usage: dlogs <container>
+    # DESC: [cyan] Follow a container's logs. Usage: dlogs <container>
     if [ -z "$1" ]; then echo "Usage: dlogs <container>" >&2; return 1; fi
     docker logs -f --tail=100 "$1"
 }
 
 dstopall() {
-    # DESC: Stop every running container
+    # DESC: [red] Stop every running container
     docker ps -q | while read -r id; do docker stop "$id"; done
 }

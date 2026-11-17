@@ -4,13 +4,13 @@
 alias uvs='uv sync' # DESC: Install the project's dependencies (uv sync)
 alias uvr='uv run' # DESC: Run a command in the project environment. Usage: uvr <command>
 alias uva='uv add' # DESC: Add a dependency. Usage: uva <package>...
-alias uvrm='uv remove' # DESC: Remove a dependency. Usage: uvrm <package>...
+alias uvrm='uv remove' # DESC: [yellow] Remove a dependency. Usage: uvrm <package>...
 alias uvl='uv lock' # DESC: Update the lockfile
-alias uvtree='uv tree' # DESC: Show the dependency tree
+alias uvtree='uv tree' # DESC: [cyan] Show the dependency tree
 alias uvpi='uv pip install' # DESC: pip-style install into the active environment
 alias uvti='uv tool install' # DESC: Install a Python command-line tool. Usage: uvti <tool>
-alias uvtl='uv tool list' # DESC: List installed tools
-alias uvpl='uv python list' # DESC: List available Python versions
+alias uvtl='uv tool list' # DESC: [cyan] List installed tools
+alias uvpl='uv python list' # DESC: [cyan] List available Python versions
 
 uvnew() {
     # DESC: Create a new project and cd into it. Usage: uvnew <name>
@@ -26,6 +26,6 @@ uvenv() {
 }
 
 uvup() {
-    # DESC: Upgrade every dependency in the lockfile and re-sync
+    # DESC: [yellow] Upgrade every dependency in the lockfile and re-sync
     uv lock --upgrade && uv sync
 }

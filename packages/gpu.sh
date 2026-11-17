@@ -6,7 +6,7 @@ _gpu_q() { # <query-gpu fields>: CSV without header or units
 }
 
 gpus() {
-    # DESC: One line per GPU: utilisation, memory and temperature
+    # DESC: [cyan] One line per GPU: utilisation, memory and temperature
     local out
     out=$(_gpu_q index,name,utilization.gpu,memory.used,memory.total,temperature.gpu) || return
     printf '%s\n' "$out" | awk -F', *' '
@@ -15,7 +15,7 @@ gpus() {
 }
 
 gpuwho() {
-    # DESC: Who is using the GPUs: GPU, PID, user, memory and command
+    # DESC: [cyan] Who is using the GPUs: GPU, PID, user, memory and command
     local map uuid pid mem idx info
     map=$(_gpu_q index,uuid) || return
     printf '%-4s %-8s %-12s %9s  %s\n' GPU PID USER 'MEM(MiB)' COMMAND
@@ -29,7 +29,7 @@ gpuwho() {
 }
 
 gpufree() {
-    # DESC: Indices of idle GPUs, comma separated. Usage: gpufree [count]  (idle = under $GPU_FREE_MB used, default 1000)
+    # DESC: [cyan] Indices of idle GPUs, comma separated. Usage: gpufree [count]  (idle = under $GPU_FREE_MB used, default 1000)
     _gpu_q index,memory.used | awk -F', *' -v max="${GPU_FREE_MB:-1000}" -v want="${1:-0}" '
         $2 + 0 < max { ids = ids (ids == "" ? "" : ",") $1; n++; if (want > 0 && n == want) exit }
         END { if (ids == "" || (want > 0 && n < want)) exit 1; print ids }'

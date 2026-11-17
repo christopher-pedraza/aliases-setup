@@ -1,5 +1,6 @@
 # DESCRIPTION: Peek into data files: JSONL and CSV, plain or compressed (.gz, .zst)
 # REQUIRES: jq
+# COLOR: cyan
 
 _data_cat() { # <file>: print a file, decompressing .gz and .zst on the fly
     case "$1" in

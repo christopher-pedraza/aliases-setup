@@ -15,11 +15,11 @@ nid() {
 }
 
 nreinstall() {
-    # DESC: Delete node_modules and install again
+    # DESC: [yellow] Delete node_modules and install again
     rm -rf node_modules && npm install
 }
 
 nver() {
-    # DESC: Show node and npm versions
+    # DESC: [cyan] Show node and npm versions
     printf 'node %s\nnpm  %s\n' "$(node -v)" "$(npm -v)"
 }

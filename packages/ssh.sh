@@ -19,12 +19,12 @@ sshtun() {
 }
 
 sshhosts() {
-    # DESC: List the hosts defined in ~/.ssh/config
+    # DESC: [cyan] List the hosts defined in ~/.ssh/config
     awk 'tolower($1) == "host" { for (i = 2; i <= NF; i++) if ($i !~ /[*?!]/) print $i }' "$HOME/.ssh/config" 2>/dev/null | sort
 }
 
 sshkeys() {
-    # DESC: Keys loaded in the ssh-agent, and the public keys in ~/.ssh
+    # DESC: [cyan] Keys loaded in the ssh-agent, and the public keys in ~/.ssh
     local f
     echo "--- loaded in the agent ---"
     ssh-add -l 2>&1

@@ -10,8 +10,11 @@
 #   - Header fields (all optional):
 #       DESCRIPTION  shown in `list`
 #       REQUIRES     space-separated commands; `add` warns if one is missing
-#   - `myhelp` (core package) lists any function whose FIRST body line is a
-#     `# DESC:` comment, and any alias with a trailing `# DESC:` comment.
+#       COLOR        default command color (red, green, yellow, blue, magenta, cyan, white, dim)
+#   - `myhelp` (core package) and the setup UI list any function whose FIRST body
+#     line is a `# DESC:` comment, and any alias with a trailing `# DESC:` comment.
+#     Prefix a description with `[color]` (e.g. `# DESC: [yellow] ...`) to override
+#     that command's color (`DANGER:`/`WARN:` default to red/yellow automatically).
 #
 # SHARE IT
 #   - Host the file anywhere over https, e.g. a GitHub repo or gist; others

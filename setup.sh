@@ -818,17 +818,53 @@ read_key() { # prints UP DOWN LEFT RIGHT PGUP PGDN TAB SPACE ENTER ALL CHECK UPD
 
 pick_get() { eval "_g=\$$1_$2"; } # <prefix> <index> -> $_g
 
-pkg_commands_file() { # <pkg>: caches kind<TAB>name<TAB>desc lines in $WORK/cmds/<pkg>.tsv
+pkg_commands_file() { # <pkg>: caches color_code<TAB>name<TAB>desc lines in $WORK/cmds/<pkg>.tsv
     _pcf="$WORK/cmds/$1.tsv"
     if [ ! -f "$_pcf" ]; then
         mkdir -p "$WORK/cmds"
         awk '
+            function color_code(c) {
+                c = tolower(c)
+                if (c == "red") return "1;31"
+                if (c == "green") return "1;32"
+                if (c == "yellow") return "1;33"
+                if (c == "blue") return "1;34"
+                if (c == "magenta" || c == "purple") return "1;35"
+                if (c == "cyan") return "1;36"
+                if (c == "white" || c == "bold") return "1"
+                if (c == "dim" || c == "gray") return "2"
+                return ""
+            }
+            function emit_cmd(name, desc,    rb, tag, cc) {
+                cc = ""
+                if (substr(desc, 1, 1) == "[" && (rb = index(desc, "]")) > 2) {
+                    tag = substr(desc, 2, rb - 2)
+                    cc = color_code(tag)
+                    if (cc != "") {
+                        desc = substr(desc, rb + 1)
+                        sub(/^ +/, "", desc)
+                    }
+                }
+                if (cc == "") {
+                    if (desc ~ /^DANGER:/) cc = "1;31"
+                    else if (desc ~ /^(WARN|CAUTION):/) cc = "1;33"
+                    else if (pkg_color != "") cc = pkg_color
+                    else cc = "1;32"
+                }
+                printf "%s\t%s\t%s\n", cc, name, desc
+            }
+            /^# COLOR: */ {
+                c = $0; sub(/^# COLOR: */, "", c); sub(/ .*/, "", c)
+                c = color_code(c)
+                if (c != "") pkg_color = c
+                next
+            }
             fname != "" {
                 if ($0 ~ /# DESC:/) {
                     d = $0; sub(/.*# DESC: */, "", d)
-                    printf "fn\t%s\t%s\n", fname, d
+                    emit_cmd(fname, d)
                 } else {
-                    printf "fn\t%s\t(no description)\n", fname
+                    emit_cmd(fname, "(no description)")
                 }
                 fname = ""; next
             }
@@ -842,7 +878,7 @@ pkg_commands_file() { # <pkg>: caches kind<TAB>name<TAB>desc lines in $WORK/cmds
                 } else {
                     d = "(no description)"
                 }
-                printf "alias\t%s\t%s\n", n, d
+                emit_cmd(n, d)
             }
         ' "$(pkg_file "$1")" > "$_pcf"
     fi
@@ -970,7 +1006,7 @@ tui_inspector_build() { # <idx> <width> <conflicts_tsv_text>
                 nm = cn[i]
                 if (length(nm) >= colw) nm_vis = substr(nm, 1, colw - 1) " "
                 else nm_vis = nm sp(colw - length(nm))
-                cc = (ck[i] == "fn" ? c_ok : c_blue)
+                cc = esc "[" ck[i] "m"
                 m = wrap_arr(cd[i], dw, lines)
                 if (m == 0) {
                     printf "  %s%s%s\n", cc, nm_vis, c_off

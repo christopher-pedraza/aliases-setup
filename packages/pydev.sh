@@ -57,7 +57,7 @@ _py_caches() { # <find action...>: cache directories under ., skipping .git, ven
 }
 
 pyclean() {
-    # DESC: Delete __pycache__, .pytest_cache, .mypy_cache and .ruff_cache under the current directory
+    # DESC: [yellow] Delete __pycache__, .pytest_cache, .mypy_cache and .ruff_cache under the current directory
     local n
     n=$(_py_caches -print | wc -l | tr -d ' ')
     _py_caches -exec rm -rf {} +

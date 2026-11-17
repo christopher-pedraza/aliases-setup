@@ -33,13 +33,15 @@ YES=0 ALL=0 PURGE=0 LOAD=0 CHECK_ONLY=0 NAME_OPT= SHELL_OPT=
 CHK_N=0 CHK_FAIL=0 CHK_ERR=0 CHK_WARN=0 ISSUES=
 WORK=
 TTY_SAVED=
+TUI_ALT=0
 trap 'restore_tty; [ -z "$WORK" ] || rm -rf "$WORK"' EXIT
 
 if [ -t 1 ]; then
     ESC=$(printf '\033')
     C_OK="${ESC}[1;32m" C_WARN="${ESC}[1;33m" C_ERR="${ESC}[1;31m" C_DIM="${ESC}[2m" C_OFF="${ESC}[0m"
+    C_BOLD="${ESC}[1m" C_INFO="${ESC}[1;36m" C_BLUE="${ESC}[1;34m" C_REV="${ESC}[7m"
 else
-    C_OK= C_WARN= C_ERR= C_DIM= C_OFF=
+    C_OK= C_WARN= C_ERR= C_DIM= C_OFF= C_BOLD= C_INFO= C_BLUE= C_REV=
 fi
 info() { printf '%s\n' "$*"; }
 ok()   { printf '%s%s%s\n' "$C_OK" "$*" "$C_OFF"; }
@@ -733,90 +735,276 @@ can_pick() { # a real terminal that understands ANSI escapes
 
 restore_tty() {
     if [ -n "$TTY_SAVED" ]; then
-        stty "$TTY_SAVED" 2>/dev/null || stty sane
         printf '\033[?25h'
+        if [ "${TUI_ALT:-0}" -eq 1 ]; then
+            printf '\033[?1049l'
+            TUI_ALT=0
+        fi
+        stty "$TTY_SAVED" 2>/dev/null || stty sane
         TTY_SAVED=
     fi
 }
 
-read_key() { # prints UP DOWN SPACE ENTER ALL QUIT or OTHER
+tui_enter() {
+    TTY_SAVED=$(stty -g)
+    trap 'restore_tty; exit 130' INT TERM HUP
+    stty -icanon -echo min 1 time 0
+    printf '\033[?1049h\033[?25l\033[H\033[2J'
+    TUI_ALT=1
+}
+
+tui_suspend() {
+    restore_tty
+    trap - INT TERM HUP
+}
+
+tui_resume() {
+    tui_enter
+}
+
+term_size() {
+    _sz=$(stty size 2>/dev/null || true)
+    ROWS=${_sz% *}; COLS=${_sz#* }
+    case $ROWS in ''|*[!0-9]*) ROWS=24 ;; esac
+    case $COLS in ''|*[!0-9]*) COLS=80 ;; esac
+}
+
+tui_busy() { # <message>
+    term_size
+    printf '\033[H\033[2J\n  %s%s%s\n' "$C_INFO" "$1" "$C_OFF"
+}
+
+read_key() { # prints UP DOWN LEFT RIGHT PGUP PGDN TAB SPACE ENTER ALL CHECK UPDATES UPGRADE CONFLICTS STATUS MENU CMD_UP CMD_DOWN QUIT or OTHER
     _h=$(dd bs=1 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n')
     case $_h in
-        1b) # an arrow key is ESC [ A / ESC O A; a lone ESC means "cancel"
+        1b) # arrow/nav keys start with ESC [ or ESC O; lone ESC means QUIT
             stty min 0 time 1
             _h2=$(dd bs=1 count=2 2>/dev/null | od -An -tx1 | tr -d ' \n')
-            stty min 1 time 0
             case $_h2 in
-                5b41|4f41) echo UP ;;
-                5b42|4f42) echo DOWN ;;
-                '')        echo QUIT ;;
-                *)         echo OTHER ;;
+                5b35|5b36)
+                    dd bs=1 count=1 2>/dev/null >/dev/null || true
+                    stty min 1 time 0
+                    case $_h2 in 5b35) echo PGUP ;; 5b36) echo PGDN ;; esac ;;
+                5b41|4f41) stty min 1 time 0; echo UP ;;
+                5b42|4f42) stty min 1 time 0; echo DOWN ;;
+                5b43|4f43) stty min 1 time 0; echo RIGHT ;;
+                5b44|4f44) stty min 1 time 0; echo LEFT ;;
+                5b5a)      stty min 1 time 0; echo TAB ;;
+                5b3*)
+                    dd bs=1 count=1 2>/dev/null >/dev/null || true
+                    stty min 1 time 0
+                    echo OTHER ;;
+                '')        stty min 1 time 0; echo QUIT ;;
+                *)         stty min 1 time 0; echo OTHER ;;
             esac ;;
-        20)       echo SPACE ;;
-        0a|0d)    echo ENTER ;;
-        6b)       echo UP ;;      # k
-        6a)       echo DOWN ;;    # j
-        61)       echo ALL ;;     # a
-        71|51|04|'') echo QUIT ;; # q, Q, Ctrl-D, end of input
-        *)        echo OTHER ;;
+        09)          echo TAB ;;
+        20)          echo SPACE ;;
+        0a|0d)       echo ENTER ;;
+        6b)          echo UP ;;        # k
+        6a)          echo DOWN ;;      # j
+        4b)          echo CMD_UP ;;    # K
+        4a)          echo CMD_DOWN ;;  # J
+        61)          echo ALL ;;       # a
+        63)          echo CHECK ;;     # c
+        75)          echo UPDATES ;;   # u
+        55)          echo UPGRADE ;;   # U
+        78)          echo CONFLICTS ;; # x
+        73)          echo STATUS ;;    # s
+        6d|3f)       echo MENU ;;      # m or ?
+        71|51|04|'') echo QUIT ;;      # q, Q, Ctrl-D, EOF
+        *)           echo OTHER ;;
     esac
 }
 
 pick_get() { eval "_g=\$$1_$2"; } # <prefix> <index> -> $_g
 
-pick_draw() {
-    if [ "$PICK_DRAWN" -eq 1 ]; then printf '\033[%dA' "$PICK_LINES"; fi
-    PICK_DRAWN=1
-    _w=$((COLS - 1))
-    _dw=$((COLS - 22)); if [ "$_dw" -lt 10 ]; then _dw=10; fi
+pkg_commands_file() { # <pkg>: caches kind<TAB>name<TAB>desc lines in $WORK/cmds/<pkg>.tsv
+    _pcf="$WORK/cmds/$1.tsv"
+    if [ ! -f "$_pcf" ]; then
+        mkdir -p "$WORK/cmds"
+        awk '
+            fname != "" {
+                if ($0 ~ /# DESC:/) {
+                    d = $0; sub(/.*# DESC: */, "", d)
+                    printf "fn\t%s\t%s\n", fname, d
+                } else {
+                    printf "fn\t%s\t(no description)\n", fname
+                }
+                fname = ""; next
+            }
+            /^[A-Za-z0-9][A-Za-z0-9_-]*\(\) *\{/ {
+                fname = $0; sub(/\(\).*/, "", fname); next
+            }
+            /^alias / {
+                n = $0; sub(/^alias +/, "", n); sub(/=.*/, "", n)
+                if ($0 ~ /# DESC:/) {
+                    d = $0; sub(/.*# DESC: */, "", d)
+                } else {
+                    d = "(no description)"
+                }
+                printf "alias\t%s\t%s\n", n, d
+            }
+        ' "$(pkg_file "$1")" > "$_pcf"
+    fi
+    printf '%s\n' "$_pcf"
+}
 
-    # Which selected packages define the same name?
-    _sel=; _i=1
+pick_load_data() {
+    N=0
+    ensure_work
+    rm -rf "$WORK/cmds"
+    : > "$WORK/pkgs.tsv"
+    for _p in $(pkg_names); do
+        N=$((N + 1))
+        _d=$(pkg_meta "$_p" DESCRIPTION | tr '\t' ' ')
+        _l=$(pkg_label "$_p" | tr '\t' ' ')
+        _r=$(pkg_meta "$_p" REQUIRES | tr '\t' ' ')
+        if pkg_enabled "$_p"; then _on=1; else _on=0; fi
+        eval "PN_$N=\$_p PD_$N=\$_d PL_$N=\$_l PR_$N=\$_r PI_$N=$_on PS_$N=$_on"
+        printf '%d\t%s\t%s\t%s\t%s\t%d\n' "$N" "$_p" "$_d" "$_l" "$_r" "$_on" >> "$WORK/pkgs.tsv"
+    done
+    PICK_TBL="$WORK/pick.tbl"
+    build_table "$(pkg_names | tr '\n' ' ')" > "$PICK_TBL"
+    LAST_INSP_KEY=
+}
+
+tui_inspector_build() { # <idx> <width> <conflicts_tsv_text>
+    _idx=$1 _iw=$2 _cft=$3
+    pick_get PN "$_idx"; _pn=$_g
+    pick_get PD "$_idx"; _pd=$_g
+    pick_get PL "$_idx"; _pl=$_g
+    pick_get PR "$_idx"; _pr=$_g
+    pick_get PS "$_idx"; _ps=$_g
+    pick_get PI "$_idx"; _pi=$_g
+
+    if [ "$_ps" -eq 1 ] && [ "$_pi" -eq 1 ]; then _st="[enabled]"
+    elif [ "$_ps" -eq 1 ] && [ "$_pi" -eq 0 ]; then _st="[will enable]"
+    elif [ "$_ps" -eq 0 ] && [ "$_pi" -eq 1 ]; then _st="[will disable]"
+    else _st="[available]"
+    fi
+
+    _req_str=
+    _req_miss=0
+    if [ -n "$_pr" ]; then
+        for _rq in $_pr; do
+            if command -v "$_rq" >/dev/null 2>&1; then
+                _req_str="${_req_str:+$_req_str, }$_rq (ok)"
+            else
+                _req_str="${_req_str:+$_req_str, }$_rq (missing)"
+                _req_miss=1
+            fi
+        done
+    fi
+
+    _pconf=$(printf '%s\n' "$_cft" | awk -F'\t' -v p="$_pn" '
+        $0 != "" && ("," $4 ",") ~ ("," p ",") {
+            out = out (out != "" ? "; " : "") $1 " (" $2 ")"
+        }
+        END { print out }
+    ')
+
+    _cmdf=$(pkg_commands_file "$_pn")
+    awk -F'\t' -v w="$_iw" -v pn="$_pn" -v st="$_st" -v lbl="$_pl" -v pd="$_pd" \
+        -v rq="$_req_str" -v rqm="$_req_miss" -v pcf="$_pconf" '
+        function sp(n,    r) { r = ""; while (n-- > 0) r = r " "; return r }
+        function wrap_arr(text, width, arr,    n, words, i, line, word, cnt) {
+            if (width < 8) width = 8
+            cnt = 0; line = ""
+            n = split(text, words, /[ \t]+/)
+            for (i = 1; i <= n; i++) {
+                word = words[i]
+                if (word == "") continue
+                while (length(word) > width) {
+                    if (line != "") { arr[++cnt] = line; line = "" }
+                    arr[++cnt] = substr(word, 1, width)
+                    word = substr(word, width + 1)
+                }
+                if (line == "") line = word
+                else if (length(line) + 1 + length(word) <= width) line = line " " word
+                else { arr[++cnt] = line; line = word }
+            }
+            if (line != "") arr[++cnt] = line
+            return cnt
+        }
+        BEGIN {
+            esc = sprintf("\033")
+            c_ok = esc "[1;32m"; c_warn = esc "[1;33m"; c_dim = esc "[2m"
+            c_bold = esc "[1m"; c_info = esc "[1;36m"; c_blue = esc "[1;34m"; c_off = esc "[0m"
+            nc = 0; maxn = 0
+        }
+        {
+            nc++
+            ck[nc] = $1; cn[nc] = $2; cd[nc] = $3
+            if (length($2) > maxn) maxn = length($2)
+        }
+        END {
+            if (w < 16) w = 16
+            if (pd != "") {
+                m = wrap_arr(pd, w, lines)
+                for (i = 1; i <= m; i++) print lines[i]
+            } else {
+                print c_dim "(no package description)" c_off
+            }
+            if (rq != "") {
+                rc = (rqm == 1 ? c_warn : c_dim)
+                m = wrap_arr("Requires: " rq, w, lines)
+                for (i = 1; i <= m; i++) print rc lines[i] c_off
+            }
+            if (pcf != "") {
+                m = wrap_arr("! Conflict: " pcf, w, lines)
+                for (i = 1; i <= m; i++) print c_warn lines[i] c_off
+            }
+            print ""
+            print c_bold "Commands (" nc "):" c_off
+
+            colw = maxn + 2
+            if (colw < 10) colw = 10
+            if (colw > 14) colw = 14
+            if (colw > w - 12) colw = 8
+            dw = w - 2 - colw
+            if (dw < 8) dw = 8
+            if (nc == 0) {
+                print c_dim "  (no aliases or functions defined)" c_off
+            }
+            for (i = 1; i <= nc; i++) {
+                nm = cn[i]
+                if (length(nm) >= colw) nm_vis = substr(nm, 1, colw - 1) " "
+                else nm_vis = nm sp(colw - length(nm))
+                cc = (ck[i] == "fn" ? c_ok : c_blue)
+                m = wrap_arr(cd[i], dw, lines)
+                if (m == 0) {
+                    printf "  %s%s%s\n", cc, nm_vis, c_off
+                } else {
+                    printf "  %s%s%s%s\n", cc, nm_vis, c_off, lines[1]
+                    for (j = 2; j <= m; j++) {
+                        printf "  %s%s\n", sp(colw), lines[j]
+                    }
+                }
+            }
+        }
+    ' "$_cmdf" > "$WORK/inspect.body"
+
+    CMD_TOTAL=$(wc -l < "$WORK/inspect.body" | tr -d ' ')
+    case $CMD_TOTAL in ''|*[!0-9]*) CMD_TOTAL=0 ;; esac
+}
+
+pick_draw() {
+    term_size
+    # Current selection state
+    _sel=; _sel_bits=; _enabled_cnt=0; _i=1
     while [ "$_i" -le "$N" ]; do
-        pick_get PS "$_i"
-        if [ "$_g" -eq 1 ]; then pick_get PN "$_i"; _sel="$_sel $_g"; fi
+        pick_get PS "$_i"; _s=$_g
+        if [ "$_s" -eq 1 ]; then
+            pick_get PN "$_i"
+            _sel="$_sel $_g"
+            _enabled_cnt=$((_enabled_cnt + 1))
+        fi
+        _sel_bits="${_sel_bits}${_s}"
         _i=$((_i + 1))
     done
+
     _cf=$(pick_conflicts "$PICK_TBL" "$_sel")
     _cpk=" $(printf '%s\n' "$_cf" | cut -f2 | tr ',' ' ' | tr '\n' ' ') "
-
-    if [ "$CUR" -lt "$TOP" ]; then TOP=$CUR; fi
-    if [ "$CUR" -ge $((TOP + VIS)) ]; then TOP=$((CUR - VIS + 1)); fi
-
-    printf '\r\033[K%sSelect packages%s\n' "${ESC}[1m" "$C_OFF"
-    printf '\r\033[K%s%s%s\n' "$C_DIM" "$(printf '%s' "up/down or j/k: move   space: toggle   a: all/none   enter: apply   q: cancel   !: conflict" | cut -c1-"$_w")" "$C_OFF"
-
-    _i=$TOP
-    while [ "$_i" -lt $((TOP + VIS)) ]; do
-        pick_get PN "$_i"; _n=$_g
-        pick_get PD "$_i"; _d=$_g
-        pick_get PL "$_i"; _l=$_g
-        pick_get PS "$_i"; _s=$_g
-        if [ "$_s" -eq 1 ]; then _box="${C_OK}[x]${C_OFF}"; else _box="[ ]"; fi
-        _text=$(printf '%s%s' "$_d" "$_l" | cut -c1-"$_dw")
-        case $_cpk in *" $_n "*) _flag="${C_WARN}!${C_OFF}" ;; *) _flag=' ' ;; esac
-        if [ "$_i" -eq "$CUR" ]; then
-            printf '\r\033[K> %s %s %s%-12s%s %s\n' "$_flag" "$_box" "${ESC}[1m" "$_n" "$C_OFF" "$_text"
-        else
-            printf '\r\033[K  %s %s %-12s %s\n' "$_flag" "$_box" "$_n" "$_text"
-        fi
-        _i=$((_i + 1))
-    done
-
-    if [ "$TOP" -gt 1 ] || [ $((TOP + VIS - 1)) -lt "$N" ]; then
-        printf '\r\033[K%s  (%d-%d of %d)%s\n' "$C_DIM" "$TOP" $((TOP + VIS - 1)) "$N" "$C_OFF"
-    else
-        printf '\r\033[K\n'
-    fi
-
-    pick_get PP "$CUR"
-    printf '\r\033[K%s\n' "$(printf 'provides: %s' "$_g" | cut -c1-"$_w")"
-
-    if [ -n "$_cf" ]; then
-        printf '\r\033[K%s%s%s\n' "$C_WARN" "$(printf '%s\n' "$_cf" | awk -F'\t' '{ printf "%s%s (%s)", (NR > 1 ? "; " : ""), $1, $2 }' | sed 's/^/! conflict: /' | cut -c1-"$_w")" "$C_OFF"
-    else
-        printf '\r\033[K\n'
-    fi
 
     _chg=
     _i=1
@@ -829,57 +1017,612 @@ pick_draw() {
         fi
         _i=$((_i + 1))
     done
-    if [ -z "$_chg" ]; then _chg=" no changes"; fi
-    printf '\r\033[K%s\n' "$(printf 'pending:%s' "$_chg" | cut -c1-"$_w")"
+
+    _loader_st="not installed"
+    if [ -f "$CONF/init.sh" ]; then _loader_st="installed"; fi
+
+    if [ "$COLS" -ge 76 ] && [ "$ROWS" -ge 14 ]; then
+        _mode=split
+        _left_w=$((COLS * 38 / 100))
+        if [ "$_left_w" -lt 28 ]; then _left_w=28; fi
+        if [ "$_left_w" -gt 42 ]; then _left_w=42; fi
+        _right_w=$((COLS - _left_w - 4))
+        _hdr_h=2
+        _ftr_h=4
+        _body_h=$((ROWS - _hdr_h - _ftr_h))
+        if [ "$_body_h" -lt 4 ]; then _body_h=4; fi
+        VIS=$((_body_h - 1))
+    else
+        _mode=stack
+        _left_w=$((COLS - 1))
+        _right_w=$((COLS - 1))
+        _hdr_h=2
+        _ftr_h=3
+        _avail=$((ROWS - _hdr_h - _ftr_h))
+        if [ "$_avail" -lt 6 ]; then _avail=6; fi
+        VIS=$((_avail / 2))
+        if [ "$VIS" -lt 3 ]; then VIS=3; fi
+        if [ "$VIS" -gt "$N" ]; then VIS=$N; fi
+        _cmd_vis=$((_avail - VIS - 2))
+        if [ "$_cmd_vis" -lt 1 ]; then _cmd_vis=1; fi
+    fi
+
+    if [ "$CUR" -lt "$TOP" ]; then TOP=$CUR; fi
+    if [ "$CUR" -ge $((TOP + VIS)) ]; then TOP=$((CUR - VIS + 1)); fi
+    if [ "$TOP" -lt 1 ]; then TOP=1; fi
+
+    pick_get PS "$CUR"; _cur_ps=$_g
+    pick_get PI "$CUR"; _cur_pi=$_g
+    pick_get PN "$CUR"; _cur_pn=$_g
+    pick_get PL "$CUR"; _cur_pl=$_g
+    _insp_key="${CUR}:${_right_w}:${_cur_ps}:${_cur_pi}:${_cpk}"
+    if [ "$_insp_key" != "$LAST_INSP_KEY" ] || [ ! -f "$WORK/inspect.body" ]; then
+        tui_inspector_build "$CUR" "$_right_w" "$_cf"
+        LAST_INSP_KEY=$_insp_key
+    fi
+
+    if [ "$_mode" = split ]; then _rvis=$VIS; else _rvis=$_cmd_vis; fi
+    _max_ctop=$((CMD_TOTAL - _rvis + 1))
+    if [ "$_max_ctop" -lt 1 ]; then _max_ctop=1; fi
+    if [ "$CMD_TOP" -gt "$_max_ctop" ]; then CMD_TOP=$_max_ctop; fi
+    if [ "$CMD_TOP" -lt 1 ]; then CMD_TOP=1; fi
+
+    _cf_line=
+    if [ -n "$_cf" ]; then
+        _cf_line=$(printf '%s\n' "$_cf" | awk -F'\t' '{ printf "%s%s (%s)", (NR > 1 ? "; " : ""), $1, $2 }' | sed 's/^/! conflict: /')
+    fi
+
+    awk -F'\t' \
+        -v mode="$_mode" -v cols="$COLS" -v rows="$ROWS" \
+        -v lw="$_left_w" -v rw="$_right_w" \
+        -v n="$N" -v cur="$CUR" -v top="$TOP" -v vis="$VIS" \
+        -v ctop="$CMD_TOP" -v ctot="$CMD_TOTAL" -v rvis="$_rvis" \
+        -v focus="$FOCUS" -v sbits="$_sel_bits" -v cpk="$_cpk" \
+        -v ver="$(cur_version)" -v ldst="$_loader_st" -v enc="$_enabled_cnt" \
+        -v updb="$UPDATE_BADGE" -v chg="$_chg" -v cfl="$_cf_line" \
+        -v curpn="$_cur_pn" -v curpl="$_cur_pl" -v curps="$_cur_ps" -v curpi="$_cur_pi" \
+        -v insp_file="$WORK/inspect.body" '
+        function sp(k,    r) { r = ""; while (k-- > 0) r = r " "; return r }
+        function hr(k,    r) { r = ""; while (k-- > 0) r = r "-"; return r }
+        function fit(s, w) {
+            if (w <= 0) return ""
+            if (length(s) > w) return (w > 3 ? substr(s, 1, w - 3) "..." : substr(s, 1, w))
+            return s sp(w - length(s))
+        }
+        BEGIN {
+            esc = sprintf("\033")
+            c_ok = esc "[1;32m"; c_warn = esc "[1;33m"; c_err = esc "[1;31m"
+            c_dim = esc "[2m"; c_bold = esc "[1m"; c_info = esc "[1;36m"
+            c_rev = esc "[7m"; c_off = esc "[0m"
+        }
+        {
+            idx = $1 + 0
+            pn[idx] = $2; pd[idx] = $3; pl[idx] = $4; pi[idx] = $6 + 0
+        }
+        END {
+            rn = 0
+            while ((getline line < insp_file) > 0) rlines[++rn] = line
+            close(insp_file)
+
+            # Determine current package status badge
+            if (curps == 1 && curpi == 1) st = "[enabled]"
+            else if (curps == 1 && curpi == 0) st = "[will enable]"
+            else if (curps == 0 && curpi == 1) st = "[will disable]"
+            else st = "[available]"
+
+            printf "%s[H", esc
+
+            # Header
+            hdr_left = "aliases-setup v" ver "  |  loader: " ldst "  |  " enc "/" n " enabled"
+            if (updb != "") hdr_left = hdr_left "  |  " updb
+            printf "\r%s[K%s%s%s\n", esc, c_bold, fit(hdr_left, cols - 1), c_off
+            printf "\r%s[K%s%s%s\n", esc, c_dim, hr(cols - 1), c_off
+
+            if (mode == "split") {
+                # Pane headers
+                lend = top + vis - 1; if (lend > n) lend = n
+                lscroll = (n > vis ? "(" top "-" lend "/" n ")" : "")
+                lhdr_txt = "Packages (" n ")"
+                lpad = lw - length(lhdr_txt) - length(lscroll)
+                if (lpad < 1) lpad = 1
+                if (focus == "left") {
+                    lhdr = c_info lhdr_txt c_off sp(lpad) c_dim lscroll c_off
+                } else {
+                    lhdr = c_dim lhdr_txt sp(lpad) lscroll c_off
+                }
+                if (length(lhdr_txt) + lpad + length(lscroll) > lw) {
+                    lhdr = (focus == "left" ? c_info : c_dim) fit(lhdr_txt, lw) c_off
+                }
+
+                rend = ctop + rvis - 1; if (rend > rn) rend = rn
+                rscroll = (rn > rvis ? "(" ctop "-" rend "/" rn ")" : "")
+                rt_plain = curpn "  " st curpl
+                if (focus == "right") rcol = c_info
+                else if (curps == 1) rcol = c_ok
+                else rcol = c_bold
+                rpad = rw - length(rt_plain) - length(rscroll)
+                if (rpad < 1) {
+                    rhdr = rcol fit(rt_plain, rw) c_off
+                } else {
+                    rhdr = rcol curpn "  " st c_off c_dim curpl sp(rpad) rscroll c_off
+                }
+
+                printf "\r%s[K%s %s|%s %s\n", esc, lhdr, c_dim, c_off, rhdr
+
+                for (row = 0; row < vis; row++) {
+                    i = top + row
+                    if (i <= n) {
+                        sel = substr(sbits, i, 1) + 0
+                        mark = (i == cur ? ">" : " ")
+                        flag = (index(cpk, " " pn[i] " ") > 0 ? "!" : " ")
+                        box = (sel == 1 ? "[x]" : "[ ]")
+                        nw = 11
+                        nm = pn[i]
+                        if (length(nm) > nw) nm_fit = substr(nm, 1, nw - 1) "~"
+                        else nm_fit = nm sp(nw - length(nm))
+                        dw = lw - 19
+                        if (dw < 0) dw = 0
+                        desc = fit(pd[i] pl[i], dw)
+
+                        cbox = (sel == 1 ? c_ok box c_off : box)
+                        cflag = (flag == "!" ? c_warn "!" c_off : " ")
+                        if (i == cur) {
+                            lrow = c_bold ">" c_off " " cflag " " cbox " " c_info nm_fit c_off " " desc
+                        } else {
+                            lrow = "  " cflag " " cbox " " nm_fit " " c_dim desc c_off
+                        }
+                    } else {
+                        lrow = sp(lw)
+                    }
+
+                    ri = ctop + row
+                    rrow = (ri <= rn ? rlines[ri] : "")
+                    printf "\r%s[K%s %s|%s %s\n", esc, lrow, c_dim, c_off, rrow
+                }
+            } else {
+                # Compact stacked fallback for narrow terminals
+                for (row = 0; row < vis; row++) {
+                    i = top + row
+                    if (i <= n) {
+                        sel = substr(sbits, i, 1) + 0
+                        mark = (i == cur ? ">" : " ")
+                        flag = (index(cpk, " " pn[i] " ") > 0 ? "!" : " ")
+                        box = (sel == 1 ? c_ok "[x]" c_off : "[ ]")
+                        cflag = (flag == "!" ? c_warn "!" c_off : " ")
+                        desc = fit(pd[i], cols - 20)
+                        if (i == cur) printf "\r%s[K%s %s %s %s%-11s%s %s\n", esc, mark, cflag, box, c_info, substr(pn[i], 1, 11), c_off, desc
+                        else printf "\r%s[K%s %s %s %-11s %s\n", esc, mark, cflag, box, substr(pn[i], 1, 11), desc
+                    } else {
+                        printf "\r%s[K\n", esc
+                    }
+                }
+                printf "\r%s[K%s%s%s\n", esc, c_dim, hr(cols - 1), c_off
+                printf "\r%s[K%s%s  %s%s\n", esc, c_bold, curpn, st, c_off
+                for (row = 0; row < rvis; row++) {
+                    ri = ctop + row
+                    printf "\r%s[K%s\n", esc, (ri <= rn ? rlines[ri] : "")
+                }
+            }
+
+            # Footer rule & status line
+            printf "\r%s[K%s%s%s\n", esc, c_dim, hr(cols - 1), c_off
+            if (cfl != "") {
+                st_line = c_warn fit(cfl, cols - 1) c_off
+            } else if (chg != "") {
+                st_line = c_ok "pending:" chg c_off
+            } else {
+                st_line = c_dim "pending: no changes   (Tab: scroll commands, m: more actions)" c_off
+            }
+            printf "\r%s[K%s\n", esc, st_line
+
+            # Button rows (no trailing newline on final row if rows match)
+            if (chg != "") apply_btn = c_ok "[Enter] Apply" c_off
+            else apply_btn = c_dim "[Enter] Apply" c_off
+
+            b1 = " " c_info "[Space]" c_off " Toggle  " c_info "[a]" c_off " All  " apply_btn "  " c_info "[Tab]" c_off " Scroll cmds  " c_info "[q]" c_off " Quit"
+            b2 = " " c_info "[c]" c_off " Verify  " c_info "[u]" c_off " Updates  " c_info "[x]" c_off " Conflicts  " c_info "[s]" c_off " Status  " c_info "[m]" c_off " More actions"
+            if (mode == "split") {
+                printf "\r%s[K%s\n", esc, b1
+                printf "\r%s[K%s%s[J", esc, b2, esc
+            } else {
+                printf "\r%s[K%s%s[J", esc, b1 "  " c_info "[m]" c_off " Menu", esc
+            }
+        }
+    ' "$WORK/pkgs.tsv"
+}
+
+tui_pager() { # <title> <file> [extra_mode: upgrade]
+    _ptitle=$1 _pfile=$2 _pextra=${3:-}
+    term_size
+    _pw=$((COLS - 2)); if [ "$_pw" -lt 20 ]; then _pw=20; fi
+    awk -v w="$_pw" '
+        {
+            gsub(/\t/, "    ")
+            line = $0; out = ""; vis = 0
+            i = 1; len = length(line)
+            while (i <= len) {
+                c = substr(line, i, 1)
+                if (c == "\033" && substr(line, i + 1, 1) == "[") {
+                    j = i + 2
+                    while (j <= len && substr(line, j, 1) !~ /[A-Za-z]/) j++
+                    out = out substr(line, i, j - i + 1)
+                    i = j + 1
+                    continue
+                }
+                if (vis >= w) {
+                    print out "\033[0m"
+                    out = "  "; vis = 2
+                }
+                out = out c
+                vis++
+                i++
+            }
+            print out "\033[0m"
+        }
+    ' "$_pfile" > "$WORK/pager.lines"
+    _ptot=$(wc -l < "$WORK/pager.lines" | tr -d ' ')
+    case $_ptot in ''|*[!0-9]*) _ptot=0 ;; esac
+    _ptop=1
+
+    while :; do
+        term_size
+        _pvis=$((ROWS - 4)); if [ "$_pvis" -lt 3 ]; then _pvis=3; fi
+        _pmax=$((_ptot - _pvis + 1)); if [ "$_pmax" -lt 1 ]; then _pmax=1; fi
+        if [ "$_ptop" -gt "$_pmax" ]; then _ptop=$_pmax; fi
+        if [ "$_ptop" -lt 1 ]; then _ptop=1; fi
+
+        awk -v title="$_ptitle" -v top="$_ptop" -v vis="$_pvis" -v tot="$_ptot" \
+            -v cols="$COLS" -v extra="$_pextra" '
+            function sp(k,    r) { r = ""; while (k-- > 0) r = r " "; return r }
+            function hr(k,    r) { r = ""; while (k-- > 0) r = r "-"; return r }
+            BEGIN {
+                esc = sprintf("\033")
+                c_bold = esc "[1m"; c_dim = esc "[2m"; c_info = esc "[1;36m"; c_ok = esc "[1;32m"; c_off = esc "[0m"
+            }
+            { lines[NR] = $0 }
+            END {
+                end = top + vis - 1; if (end > tot) end = tot
+                pos = (tot > 0 ? "lines " top "-" end " of " tot : "empty")
+                pad = cols - 1 - length(title) - length(pos)
+                if (pad < 1) pad = 1
+                printf "%s[H\r%s[K%s%s%s%s%s%s%s\n", esc, esc, c_bold, title, c_off, sp(pad), c_dim, pos, c_off
+                printf "\r%s[K%s%s%s\n", esc, c_dim, hr(cols - 1), c_off
+                for (r = 0; r < vis; r++) {
+                    li = top + r
+                    printf "\r%s[K%s\n", esc, (li <= tot ? lines[li] : "")
+                }
+                printf "\r%s[K%s%s%s\n", esc, c_dim, hr(cols - 1), c_off
+                ftr = " " c_info "[Up/Down/Space]" c_off " Scroll   " c_info "[q/Esc/Enter]" c_off " Back"
+                if (extra == "upgrade") ftr = ftr "   " c_ok "[U] Upgrade now" c_off
+                printf "\r%s[K%s%s[J", esc, ftr, esc
+            }
+        ' "$WORK/pager.lines"
+
+        case $(read_key) in
+            UP|CMD_UP)     _ptop=$((_ptop - 1)) ;;
+            DOWN|CMD_DOWN) _ptop=$((_ptop + 1)) ;;
+            PGUP)          _ptop=$((_ptop - _pvis)) ;;
+            PGDN|SPACE)    _ptop=$((_ptop + _pvis)) ;;
+            UPGRADE)       if [ "$_pextra" = upgrade ]; then return 10; fi ;;
+            QUIT|ENTER)    return 0 ;;
+        esac
+    done
+}
+
+tui_run_check() { # <all | pkg>
+    _cs=$1
+    tui_busy "Running verification checks (--load)..."
+    if [ "$_cs" = all ]; then
+        ( LOAD=1; CHK_N=0; CHK_FAIL=0; CHK_ERR=0; CHK_WARN=0; ISSUES=; cmd_check ) > "$WORK/pager.raw" 2>&1 || true
+        tui_pager "Verify all packages (check --load)" "$WORK/pager.raw"
+    else
+        ( LOAD=1; CHK_N=0; CHK_FAIL=0; CHK_ERR=0; CHK_WARN=0; ISSUES=; cmd_check "$_cs" ) > "$WORK/pager.raw" 2>&1 || true
+        tui_pager "Verify package: $_cs (check --load)" "$WORK/pager.raw"
+    fi
+}
+
+tui_check_updates() {
+    tui_busy "Checking for updates..."
+    : > "$WORK/pager.raw"
+    _urc=0
+    ( CHECK_ONLY=1; cmd_upgrade ) > "$WORK/upd_repo" 2>&1 || _urc=$?
+    printf '%saliases-setup (%s):%s\n' "$C_BOLD" "$(cur_version)" "$C_OFF" >> "$WORK/pager.raw"
+    sed 's/^/  /' "$WORK/upd_repo" >> "$WORK/pager.raw"
+
+    _uextra=
+    if [ "$_urc" -eq 10 ]; then
+        _uextra=upgrade
+        UPDATE_BADGE="update available"
+    elif [ "$_urc" -eq 0 ]; then
+        UPDATE_BADGE="up to date"
+    fi
+
+    _has_url=0
+    for _uf in "$USER_PKG_DIR"/*.url; do
+        if [ -f "$_uf" ]; then _has_url=1; break; fi
+    done
+    if [ "$_has_url" -eq 1 ]; then
+        printf '\n%sDownloaded URL packages:%s\n' "$C_BOLD" "$C_OFF" >> "$WORK/pager.raw"
+        for _uf in "$USER_PKG_DIR"/*.url; do
+            [ -f "$_uf" ] || continue
+            _un=$(basename "$_uf" .url)
+            _u=$(cat "$_uf")
+            if ( fetch_checked "$_u" "$WORK/upd_${_un}.sh" ) > "$WORK/upd_pkg_out" 2>&1; then
+                if [ -f "$USER_PKG_DIR/$_un.sh" ] && cmp -s "$WORK/upd_${_un}.sh" "$USER_PKG_DIR/$_un.sh"; then
+                    printf '  %s ok %s %-12s up to date\n' "$C_OK" "$C_OFF" "$_un" >> "$WORK/pager.raw"
+                else
+                    printf '  %swarn%s %-12s update available (run "Update downloaded URL packages" in [m] Menu)\n' "$C_WARN" "$C_OFF" "$_un" >> "$WORK/pager.raw"
+                fi
+            else
+                printf '  %sFAIL%s %-12s check failed (%s)\n' "$C_ERR" "$C_OFF" "$_un" "$_u" >> "$WORK/pager.raw"
+            fi
+        done
+    fi
+
+    tui_pager "Check for updates" "$WORK/pager.raw" "$_uextra"
+    if [ "$?" -eq 10 ]; then
+        tui_run_interactive upgrade
+    fi
+}
+
+tui_run_conflicts() { # <0=enabled, 1=all>
+    _ca=$1
+    tui_busy "Analysing conflicts..."
+    ( ALL=$_ca; cmd_conflicts ) > "$WORK/pager.raw" 2>&1 || true
+    if [ "$_ca" -eq 1 ]; then
+        tui_pager "Conflicts (all packages)" "$WORK/pager.raw"
+    else
+        tui_pager "Conflicts (enabled packages)" "$WORK/pager.raw"
+    fi
+}
+
+tui_run_status() {
+    tui_busy "Checking install status..."
+    ( cmd_status ) > "$WORK/pager.raw" 2>&1 || true
+    tui_pager "Install status" "$WORK/pager.raw"
+}
+
+tui_pause() {
+    printf '\n%sPress Enter to return to setup...%s' "$C_DIM" "$C_OFF"
+    read -r _dummy || true
+}
+
+tui_reload_preserving_pending() {
+    _keep_on= _keep_off=
+    _i=1
+    while [ "$_i" -le "$N" ]; do
+        pick_get PS "$_i"; _s=$_g
+        pick_get PI "$_i"; _o=$_g
+        pick_get PN "$_i"
+        if [ "$_s" -ne "$_o" ]; then
+            if [ "$_s" -eq 1 ]; then _keep_on="$_keep_on $_g"; else _keep_off="$_keep_off $_g"; fi
+        fi
+        _i=$((_i + 1))
+    done
+    pick_load_data
+    _i=1
+    while [ "$_i" -le "$N" ]; do
+        pick_get PN "$_i"; _pn=$_g
+        case " $_keep_on " in *" $_pn "*) eval "PS_$_i=1" ;; esac
+        case " $_keep_off " in *" $_pn "*) eval "PS_$_i=0" ;; esac
+        _i=$((_i + 1))
+    done
+    if [ "$CUR" -gt "$N" ]; then CUR=$N; fi
+    if [ "$CUR" -lt 1 ]; then CUR=1; fi
+    CMD_TOP=1
+}
+
+tui_run_interactive() { # <action> -> returns 2 if uninstalled and TUI should exit
+    _act=$1
+    tui_suspend
+    case $_act in
+        upgrade)
+            ( cmd_upgrade ) || true
+            tui_pause
+            tui_resume
+            tui_reload_preserving_pending
+            ;;
+        update_urls)
+            ( cmd_update ) || true
+            tui_pause
+            tui_resume
+            tui_reload_preserving_pending
+            ;;
+        install_loader)
+            printf 'Target shell [1=default (%s), 2=bash, 3=zsh, 4=all]: ' "${SHELL_OPT:-auto}"
+            read -r _shc || _shc=
+            _shv=$SHELL_OPT
+            case $_shc in
+                2|bash) _shv=bash ;;
+                3|zsh)  _shv=zsh ;;
+                4|all)  _shv=all ;;
+            esac
+            ( SHELL_OPT=$_shv; cmd_install ) || true
+            tui_pause
+            tui_resume
+            ;;
+        new_pkg)
+            printf 'New custom package name: '
+            read -r _np || _np=
+            if [ -n "$_np" ]; then
+                ( cmd_new "$_np" ) || true
+                tui_pause
+            fi
+            tui_resume
+            tui_reload_preserving_pending
+            ;;
+        add_url)
+            printf 'HTTPS URL to package (.sh): '
+            read -r _au || _au=
+            if [ -n "$_au" ]; then
+                printf 'Package name (blank to derive from URL): '
+                read -r _an || _an=
+                (
+                    NAME_OPT=$_an
+                    _sh=$(target_shell)
+                    bootstrap "$_sh"
+                    add_url "$_au"
+                ) || true
+                tui_pause
+            fi
+            tui_resume
+            tui_reload_preserving_pending
+            ;;
+        uninstall)
+            ( cmd_uninstall ) || true
+            if [ ! -e "$CONF/init.sh" ] && [ ! -d "$ENABLED" ]; then
+                return 2
+            fi
+            tui_pause
+            tui_resume
+            tui_reload_preserving_pending
+            ;;
+    esac
+    return 0
+}
+
+tui_menu() { # returns 2 if TUI should exit (e.g. after uninstall)
+    pick_get PN "$CUR"; _cur_name=$_g
+    _mcur=1
+    _mn=12
+    while :; do
+        term_size
+        awk -v mcur="$_mcur" -v cols="$COLS" -v rows="$ROWS" -v cpkg="$_cur_name" '
+            function sp(k,    r) { r = ""; while (k-- > 0) r = r " "; return r }
+            function hr(k,    r) { r = ""; while (k-- > 0) r = r "-"; return r }
+            BEGIN {
+                esc = sprintf("\033")
+                c_bold = esc "[1m"; c_dim = esc "[2m"; c_info = esc "[1;36m"; c_warn = esc "[1;33m"; c_off = esc "[0m"
+                item[1]  = "Verify all packages (check --load)"
+                desc[1]  = "Syntax, portability lint, DESC metadata, and load test in bash/zsh"
+                item[2]  = "Verify highlighted package (" cpkg ")"
+                desc[2]  = "Run check --load on the currently selected package"
+                item[3]  = "Check for updates (repo + downloaded URLs)"
+                desc[3]  = "Compare against newest git release tag and URL sources"
+                item[4]  = "Upgrade aliases-setup to latest release"
+                desc[4]  = "Fast-forward this checkout to the newest release tag"
+                item[5]  = "Update downloaded URL packages"
+                desc[5]  = "Re-download URL packages and review diffs before applying"
+                item[6]  = "Check conflicts (enabled packages)"
+                desc[6]  = "Find duplicate command names and PATH shadows among enabled packages"
+                item[7]  = "Check conflicts (all packages)"
+                desc[7]  = "Analyse all packages, including ones not currently enabled"
+                item[8]  = "Show install status"
+                desc[8]  = "Version, loader health, rc blocks, and enabled/available list"
+                item[9]  = "Install / refresh shell loader"
+                desc[9]  = "Write init.sh and add the managed rc block for bash/zsh/all"
+                item[10] = "Create new custom package"
+                desc[10] = "Generate a new package file in ~/.config/aliases-setup/packages/"
+                item[11] = "Add package from HTTPS URL"
+                desc[11] = "Download, validate, inspect code, and enable a remote package"
+                item[12] = "Uninstall aliases-setup"
+                desc[12] = "Remove rc blocks and loader files"
+
+                printf "%s[H\r%s[K%sActions & Tools%s\n", esc, esc, c_bold, c_off
+                printf "\r%s[K%s%s%s\n", esc, c_dim, hr(cols - 1), c_off
+                for (i = 1; i <= 12; i++) {
+                    if (i == mcur) {
+                        printf "\r%s[K  %s> %-44s%s\n", esc, c_info, item[i], c_off
+                    } else {
+                        printf "\r%s[K    %-44s\n", esc, item[i]
+                    }
+                }
+                printf "\r%s[K%s%s%s\n", esc, c_dim, hr(cols - 1), c_off
+                printf "\r%s[K  %s%s%s\n", esc, c_dim, substr(desc[mcur], 1, cols - 4), c_off
+                printf "\r%s[K\n", esc
+                printf "\r%s[K %s[Up/Down]%s Move   %s[Enter]%s Run   %s[q/Esc]%s Back%s[J", esc, c_info, c_off, c_info, c_off, c_info, c_off, esc
+            }
+        '
+
+        case $(read_key) in
+            UP|CMD_UP)     _mcur=$((_mcur - 1)); if [ "$_mcur" -lt 1 ]; then _mcur=$_mn; fi ;;
+            DOWN|CMD_DOWN) _mcur=$((_mcur + 1)); if [ "$_mcur" -gt "$_mn" ]; then _mcur=1; fi ;;
+            QUIT|LEFT)     return 0 ;;
+            ENTER|SPACE|RIGHT)
+                case $_mcur in
+                    1)  tui_run_check all ;;
+                    2)  tui_run_check "$_cur_name" ;;
+                    3)  tui_check_updates ;;
+                    4)  tui_run_interactive upgrade ;;
+                    5)  tui_run_interactive update_urls ;;
+                    6)  tui_run_conflicts 0 ;;
+                    7)  tui_run_conflicts 1 ;;
+                    8)  tui_run_status ;;
+                    9)  tui_run_interactive install_loader ;;
+                    10) tui_run_interactive new_pkg ;;
+                    11) tui_run_interactive add_url ;;
+                    12) if ! tui_run_interactive uninstall; then return 2; fi ;;
+                esac
+                pick_get PN "$CUR"; _cur_name=$_g
+                ;;
+        esac
+    done
 }
 
 pick_packages() {
-    N=0
-    for _p in $(pkg_names); do
-        N=$((N + 1))
-        _d=$(pkg_meta "$_p" DESCRIPTION)
-        _l=$(pkg_label "$_p")
-        _v=$(pkg_provides "$_p")
-        if pkg_enabled "$_p"; then _on=1; else _on=0; fi
-        eval "PN_$N=\$_p PD_$N=\$_d PL_$N=\$_l PP_$N=\$_v PI_$N=$_on PS_$N=$_on"
-    done
+    pick_load_data
     if [ "$N" -eq 0 ]; then info "No packages found."; return 0; fi
 
-    _sz=$(stty size 2>/dev/null || true)
-    ROWS=${_sz% *}; COLS=${_sz#* }
-    case $ROWS in ''|*[!0-9]*) ROWS=24 ;; esac
-    case $COLS in ''|*[!0-9]*) COLS=80 ;; esac
-    VIS=$((ROWS - 7)); if [ "$VIS" -gt "$N" ]; then VIS=$N; fi; if [ "$VIS" -lt 3 ]; then VIS=3; fi
-    if [ "$VIS" -gt "$N" ]; then VIS=$N; fi
-    PICK_LINES=$((VIS + 6)); PICK_DRAWN=0; CUR=1; TOP=1
-    ensure_work
-    PICK_TBL="$WORK/pick.tbl"
-    build_table "$(pkg_names | tr '\n' ' ')" > "$PICK_TBL"
-
-    TTY_SAVED=$(stty -g)
-    trap 'restore_tty; exit 130' INT TERM HUP
-    stty -icanon -echo min 1 time 0
-    printf '\033[?25l'
+    CUR=1; TOP=1; CMD_TOP=1; CMD_TOTAL=0; FOCUS=left; UPDATE_BADGE=
+    tui_enter
     pick_draw
     _done=
     while [ -z "$_done" ]; do
         case $(read_key) in
-            UP)    CUR=$((CUR - 1)); if [ "$CUR" -lt 1 ]; then CUR=$N; fi ;;
-            DOWN)  CUR=$((CUR + 1)); if [ "$CUR" -gt "$N" ]; then CUR=1; fi ;;
-            SPACE) pick_get PS "$CUR"; eval "PS_$CUR=$((1 - _g))" ;;
-            ALL)   _v=1; _i=1
-                   while [ "$_i" -le "$N" ]; do pick_get PS "$_i"; if [ "$_g" -eq 0 ]; then _v=0; fi; _i=$((_i + 1)); done
-                   _i=1  # everything already selected -> clear all, otherwise select all
-                   while [ "$_i" -le "$N" ]; do eval "PS_$_i=$((1 - _v))"; _i=$((_i + 1)); done ;;
-            ENTER) _done=apply ;;
-            QUIT)  _done=cancel ;;
+            UP)
+                if [ "$FOCUS" = right ]; then
+                    if [ "$CMD_TOP" -gt 1 ]; then CMD_TOP=$((CMD_TOP - 1)); fi
+                else
+                    CUR=$((CUR - 1)); if [ "$CUR" -lt 1 ]; then CUR=$N; fi
+                    CMD_TOP=1
+                fi ;;
+            DOWN)
+                if [ "$FOCUS" = right ]; then
+                    CMD_TOP=$((CMD_TOP + 1))
+                else
+                    CUR=$((CUR + 1)); if [ "$CUR" -gt "$N" ]; then CUR=1; fi
+                    CMD_TOP=1
+                fi ;;
+            CMD_UP|PGUP)
+                CMD_TOP=$((CMD_TOP - 5)); if [ "$CMD_TOP" -lt 1 ]; then CMD_TOP=1; fi ;;
+            CMD_DOWN|PGDN)
+                CMD_TOP=$((CMD_TOP + 5)) ;;
+            TAB)
+                if [ "$FOCUS" = left ]; then FOCUS=right; else FOCUS=left; fi ;;
+            RIGHT)
+                FOCUS=right ;;
+            LEFT)
+                FOCUS=left ;;
+            SPACE)
+                pick_get PS "$CUR"; eval "PS_$CUR=$((1 - _g))" ;;
+            ALL)
+                _v=1; _i=1
+                while [ "$_i" -le "$N" ]; do pick_get PS "$_i"; if [ "$_g" -eq 0 ]; then _v=0; fi; _i=$((_i + 1)); done
+                _i=1  # everything already selected -> clear all, otherwise select all
+                while [ "$_i" -le "$N" ]; do eval "PS_$_i=$((1 - _v))"; _i=$((_i + 1)); done ;;
+            CHECK)
+                tui_run_check all ;;
+            UPDATES)
+                tui_check_updates ;;
+            UPGRADE)
+                tui_run_interactive upgrade ;;
+            CONFLICTS)
+                tui_run_conflicts 0 ;;
+            STATUS)
+                tui_run_status ;;
+            MENU)
+                if ! tui_menu; then _done=exit_only; fi ;;
+            ENTER)
+                _done=apply ;;
+            QUIT)
+                _done=cancel ;;
         esac
         if [ -z "$_done" ]; then pick_draw; fi
     done
     restore_tty
-    printf '\033[%dA\r\033[J' "$PICK_LINES"   # erase the picker
     trap - INT TERM HUP
 
+    if [ "$_done" = exit_only ]; then return 0; fi
     if [ "$_done" = cancel ]; then info "Cancelled; nothing changed."; return 0; fi
     _adds= _rems=
     _i=1
